@@ -1,0 +1,68 @@
+{
+  "scenario": "high-load",
+  "mode": "ft",
+  "t0": 1790073496870,
+  "t1": 1790073567393,
+  "injectTs": 1790073516870,
+  "repairTs": 1790073541871,
+  "metrics": {
+    "observationMs": 70523,
+    "requests": {
+      "total": 44020,
+      "successful": 44020,
+      "failed": 0,
+      "degraded": 0,
+      "clientTimeouts": 0
+    },
+    "availability": {
+      "timeBased": 1,
+      "requestBased": 1,
+      "upBins": 71,
+      "downBins": 0,
+      "idleBins": 0
+    },
+    "reliability": {
+      "observedFailures": 0,
+      "mttfMs": null,
+      "mttfCensored": true,
+      "mtbfMs": null,
+      "mtbfSource": "MTTF + MTTR (fewer than two outages)",
+      "mttrMs": null,
+      "failureRatePerHour": 0,
+      "outages": []
+    },
+    "response": {
+      "detectionMs": null,
+      "recoveryMs": null,
+      "absorptionMs": null,
+      "faultMasked": false,
+      "detectionSource": "none",
+      "p50Ms": 87,
+      "p95Ms": 136,
+      "p99Ms": 163,
+      "maxMs": 501
+    },
+    "mechanisms": {
+      "failedCallAttempts": 0,
+      "retriesThatSucceeded": 0,
+      "breakerOpened": 0,
+      "degradedResponses": 0,
+      "replicaReads": 0,
+      "duplicatesSuppressed": 1779,
+      "checkpointsRolledBack": 0,
+      "healthTransitions": []
+    }
+  },
+  "consistency": {
+    "paymentRequestsAccepted": 10303,
+    "distinctPaymentIntents": 8524,
+    "completedInDb": 8524,
+    "duplicateCharges": 0,
+    "orphanedPending": 0,
+    "rolledBack": 0,
+    "failedPay": 0,
+    "totalCharged": 852400,
+    "expectedCharged": 852400,
+    "ledgerBalanced": true
+  }
+}

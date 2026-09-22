@@ -1,0 +1,158 @@
+// Experiment runner: one controlled failure-injection run, end to end.
+//
+//   node --experimental-strip-types scripts/run.ts <scenario>
+//
+// It restores the system to a known-good state, resets the ledger, drives the
+// workload, injects the fault at a fixed offset, repairs at a fixed offset,
+// then writes the raw data AND a self-contained report for that single run to
+// results/<scenario>__<mode>/. The mode (baseline or ft) is read from the
+// running system, never assumed.
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { runWorkload, type Rec } from './workload.ts';
+import { SCENARIOS, dc } from './scenarios.ts';
+import { computeMetrics } from './metrics.ts';
+import { consistencyFrom, rebuildLog, report, writeJsonlGz, ms, pctStr, s1 } from './report.ts';
+
+const exec = promisify(execFile);
+const ROOT = new URL('..', import.meta.url).pathname;
+const GATEWAY = 'http://localhost:8080';
+const INSTANCES = [3011, 3012, 3021, 3022, 3031];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Reads a file from a byte offset -- the slice of the shared event log this run produced. */
+function readFrom(path: string, offset: number): string {
+  const size = statSync(path).size;
+  if (size <= offset) return '';
+  const fd = openSync(path, 'r');
+  const buf = Buffer.alloc(size - offset);
+  readSync(fd, buf, 0, buf.length, offset);
+  closeSync(fd);
+  return buf.toString('utf8');
+}
+
+const psql = async (sql: string): Promise<string> => {
+  const { stdout } = await exec(
+    'docker',
+    ['compose', 'exec', '-T', 'postgres-primary', 'psql', '-U', 'postgres', '-d', 'university', '-t', '-A', '-F', '|', '-c', sql],
+    { cwd: ROOT },
+  );
+  return stdout.trim();
+};
+
+/** Bring every container back and wait until the whole platform answers. */
+async function ensureHealthy(): Promise<void> {
+  process.stdout.write('  restoring platform ');
+  await dc('start');
+  for (let i = 0; i < 90; i++) {
+    const checks = await Promise.all(
+      INSTANCES.map((p) =>
+        fetch(`http://localhost:${p}/health`, { signal: AbortSignal.timeout(1000) })
+          .then((r) => r.ok)
+          .catch(() => false),
+      ),
+    );
+    const gw = await fetch(`${GATEWAY}/health`, { signal: AbortSignal.timeout(1000) }).then((r) => r.ok).catch(() => false);
+    const repl = await psql('select count(*) from pg_stat_replication;').catch(() => '0');
+    if (checks.every(Boolean) && gw && repl.trim() === '1') {
+      console.log('ok (all instances up, standby streaming)');
+      return;
+    }
+    process.stdout.write('.');
+    await sleep(1000);
+  }
+  throw new Error('platform did not become healthy within 90 s');
+}
+
+async function main(): Promise<void> {
+  const name = process.argv[2];
+  const scenario = SCENARIOS[name];
+  if (!scenario) {
+    console.log(`usage: node scripts/run.ts <${Object.keys(SCENARIOS).join('|')}>`);
+    process.exit(1);
+  }
+
+  console.log(`\n=== ${scenario.title} (${name}) ===`);
+  await ensureHealthy();
+
+  const health = await (await fetch(`${GATEWAY}/health`)).json();
+  const mode = health.ft ? 'ft' : 'baseline';
+  console.log(`  mode: ${mode.toUpperCase()}`);
+
+  // Fresh ledger, so duplicate/orphan counts belong to this run alone.
+  await psql("TRUNCATE payments; UPDATE students SET balance = 0;");
+
+  const runId = `${name}-${mode}-${Date.now()}`;
+  const eventsPath = `${ROOT}logs/events.jsonl`;
+  const eventsOffset = statSync(eventsPath).size;
+  const t0 = Date.now();
+  let injectTs = 0;
+  let repairTs = 0;
+
+  setTimeout(async () => {
+    injectTs = Date.now();
+    console.log(`  T+${((injectTs - t0) / 1000).toFixed(1)}s  INJECT`);
+    await scenario.inject();
+  }, scenario.injectAtMs);
+
+  setTimeout(async () => {
+    repairTs = Date.now();
+    console.log(`  T+${((repairTs - t0) / 1000).toFixed(1)}s  REPAIR`);
+    await scenario.repair();
+  }, scenario.repairAtMs);
+
+  console.log(`  running workload for ${scenario.durationMs / 1000}s ...`);
+  const recs = await runWorkload({
+    gateway: GATEWAY,
+    durationMs: scenario.durationMs,
+    concurrency: 10,
+    rampAtMs: scenario.rampAtMs,
+    rampConcurrency: scenario.rampConcurrency,
+    runId,
+  });
+  const t1 = Date.now();
+
+  // --- collect the service-side event log for this window --------------------
+  const events = readFrom(eventsPath, eventsOffset)
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.ts >= t0 - 2000 && e.ts <= t1 + 2000);
+
+  // --- data consistency ------------------------------------------------------
+  const ledger = await psql(
+    `select
+       (select count(*) from payments where state='completed'),
+       (select count(*) from payments where state='pending'),
+       (select count(*) from payments where state='rolled_back'),
+       (select count(*) from payments where state='failed'),
+       (select coalesce(sum(amount),0) from payments where state='completed'),
+       (select coalesce(sum(balance),0) from students);`,
+  ).catch(() => '0|0|0|0|0|0');
+  const [completed, pending, rolledBack, failedPay, charged, balances] = ledger.split('|').map(Number);
+
+  const consistency = consistencyFrom(recs, {
+    completed, pending, rolledBack, failedPay, charged, balances,
+  });
+
+  const metrics = computeMetrics(recs, events, t0, t1, injectTs || t0 + scenario.injectAtMs);
+
+  // --- persist ---------------------------------------------------------------
+  const dir = `${ROOT}results/${name}__${mode}`;
+  mkdirSync(dir, { recursive: true });
+  writeJsonlGz(`${dir}/workload.jsonl`, recs);
+  writeJsonlGz(`${dir}/events.jsonl`, events);
+  writeFileSync(`${dir}/metrics.json`, JSON.stringify({ scenario: name, mode, t0, t1, injectTs, repairTs, metrics, consistency }, null, 2));
+  writeFileSync(`${dir}/REPORT.md`, report(scenario, mode, t0, t1, injectTs, repairTs, metrics, consistency, events));
+  rebuildLog();
+
+  console.log(`  availability ${pctStr(metrics.availability.requestBased)} req / ${pctStr(metrics.availability.timeBased)} time` +
+    ` | failed ${metrics.requests.failed}/${metrics.requests.total}` +
+    ` | detect ${ms(metrics.response.detectionMs)} | recover ${ms(metrics.response.recoveryMs)}`);
+  console.log(`  -> ${dir.replace(ROOT, '')}/REPORT.md`);
+}
+
+// ---------------------------------------------------------------- reporting
+await main();

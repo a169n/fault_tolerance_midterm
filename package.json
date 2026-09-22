@@ -1,0 +1,19 @@
+{
+  "name": "ft-university",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "scripts": {
+    "test": "LOG_DIR=./logs python3 -m unittest discover -s tests -t . -v",
+    "up:baseline": "printf 'FT_ENABLED=0\\nRESTART_POLICY=no\\n' > .env && docker compose up -d --build",
+    "up:ft": "printf 'FT_ENABLED=1\\nRESTART_POLICY=unless-stopped\\n' > .env && docker compose up -d --build",
+    "exp": "node --experimental-strip-types scripts/run.ts",
+    "campaign": "bash scripts/campaign.sh",
+    "mode": "curl -s localhost:8080/health | head -c 40; echo"
+  }
+}

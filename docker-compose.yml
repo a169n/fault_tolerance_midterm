@@ -1,0 +1,112 @@
+# Baseline:        FT_ENABLED=0 RESTART_POLICY=no            docker compose up -d --build
+# Fault-tolerant:  FT_ENABLED=1 RESTART_POLICY=unless-stopped docker compose up -d --build
+#
+# Hardware / infrastructure fault tolerance demonstrated here:
+#   1. Service replication + load balancing (student-1/2, payment-1/2 behind the gateway)
+#   2. PostgreSQL streaming replication (primary + hot standby, read failover in src/db.ts)
+#   3. Self-healing via container restart policy (the Compose analogue of a k8s ReplicaSet)
+
+x-service: &service
+  build: .
+  restart: ${RESTART_POLICY:-no}
+  environment: &service-env
+    FT_ENABLED: ${FT_ENABLED:-0}
+    LOG_DIR: /logs
+    DATABASE_URL: postgresql://postgres:postgres@postgres-primary:5432/university
+    DATABASE_REPLICA_URL: postgresql://postgres:postgres@postgres-replica:5432/university
+  volumes:
+    - ./logs:/logs
+  depends_on:
+    postgres-primary:
+      condition: service_healthy
+
+services:
+  postgres-primary:
+    image: postgres:16
+    restart: ${RESTART_POLICY:-no}
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: university
+      # Assumption: the database is reachable only on the internal Compose network,
+      # so trust auth is acceptable here and keeps pg_hba out of the setup. A real
+      # deployment would use scram-sha-256 plus a replication-only pg_hba entry.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command: postgres -c hba_file=/etc/postgresql/pg_hba.conf -c wal_level=replica -c max_wal_senders=10 -c max_replication_slots=10 -c hot_standby=on
+    volumes:
+      - ./sql:/docker-entrypoint-initdb.d:ro
+      - ./pg/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - pgprimary:/var/lib/postgresql/data
+    ports: ["55432:5432"]   # host port shifted: 5432 is often taken by a local Postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d university"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Hot standby, cloned with pg_basebackup on first boot. Serves reads when the
+  # primary is down (src/db.ts read failover).
+  postgres-replica:
+    image: postgres:16
+    restart: ${RESTART_POLICY:-no}
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    volumes:
+      - pgreplica:/var/lib/postgresql/data
+    ports: ["55433:5432"]
+    command: >
+      bash -c "
+      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+        rm -rf /var/lib/postgresql/data/*;
+        until gosu postgres pg_basebackup -h postgres-primary -U repl -D /var/lib/postgresql/data -Fp -Xs -R -P; do sleep 2; done;
+      fi;
+      chown -R postgres:postgres /var/lib/postgresql/data;
+      chmod 700 /var/lib/postgresql/data;
+      exec gosu postgres postgres
+      "
+
+  gateway:
+    <<: *service
+    command: uvicorn app.gateway:app --host 0.0.0.0 --port 8080
+    environment:
+      <<: *service-env
+      SERVICE_NAME: gateway
+      PORT: 8080
+      STUDENT_URLS: http://student-1:3000,http://student-2:3000
+      PAYMENT_URLS: http://payment-1:3000,http://payment-2:3000
+      TRANSCRIPT_URLS: http://transcript-1:3000
+    ports: ["8080:8080"]
+
+  student-1:
+    <<: *service
+    command: uvicorn app.student:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: student-1 }
+    ports: ["3011:3000"]
+
+  student-2:
+    <<: *service
+    command: uvicorn app.student:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: student-2 }
+    ports: ["3012:3000"]
+
+  payment-1:
+    <<: *service
+    command: uvicorn app.payment:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: payment-1 }
+    ports: ["3021:3000"]
+
+  payment-2:
+    <<: *service
+    command: uvicorn app.payment:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: payment-2 }
+    ports: ["3022:3000"]
+
+  transcript-1:
+    <<: *service
+    command: uvicorn app.transcript:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: transcript-1 }
+    ports: ["3031:3000"]
+
+volumes:
+  pgprimary:
+  pgreplica:

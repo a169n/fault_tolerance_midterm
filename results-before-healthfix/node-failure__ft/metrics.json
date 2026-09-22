@@ -1,0 +1,89 @@
+{
+  "scenario": "node-failure",
+  "mode": "ft",
+  "t0": 1790073353180,
+  "t1": 1790073423690,
+  "injectTs": 1790073373181,
+  "repairTs": 1790073398182,
+  "metrics": {
+    "observationMs": 70510,
+    "requests": {
+      "total": 12469,
+      "successful": 12469,
+      "failed": 0,
+      "degraded": 0,
+      "clientTimeouts": 0
+    },
+    "availability": {
+      "timeBased": 1,
+      "requestBased": 1,
+      "upBins": 70,
+      "downBins": 0,
+      "idleBins": 1
+    },
+    "reliability": {
+      "observedFailures": 0,
+      "mttfMs": null,
+      "mttfCensored": true,
+      "mtbfMs": null,
+      "mtbfSource": "MTTF + MTTR (fewer than two outages)",
+      "mttrMs": null,
+      "failureRatePerHour": 0,
+      "outages": []
+    },
+    "response": {
+      "detectionMs": 253,
+      "recoveryMs": null,
+      "absorptionMs": 1162,
+      "faultMasked": true,
+      "detectionSource": "failed call attempt",
+      "p50Ms": 7,
+      "p95Ms": 15,
+      "p99Ms": 19,
+      "maxMs": 812
+    },
+    "mechanisms": {
+      "failedCallAttempts": 38,
+      "retriesThatSucceeded": 38,
+      "breakerOpened": 0,
+      "degradedResponses": 0,
+      "replicaReads": 0,
+      "duplicatesSuppressed": 443,
+      "checkpointsRolledBack": 0,
+      "healthTransitions": [
+        {
+          "ts": 1790073374023,
+          "target": "http://payment-1:3000",
+          "ok": false
+        },
+        {
+          "ts": 1790073374024,
+          "target": "http://student-1:3000",
+          "ok": false
+        },
+        {
+          "ts": 1790073399239,
+          "target": "http://payment-1:3000",
+          "ok": true
+        },
+        {
+          "ts": 1790073399239,
+          "target": "http://student-1:3000",
+          "ok": true
+        }
+      ]
+    }
+  },
+  "consistency": {
+    "paymentRequestsAccepted": 2821,
+    "distinctPaymentIntents": 2378,
+    "completedInDb": 2378,
+    "duplicateCharges": 0,
+    "orphanedPending": 0,
+    "rolledBack": 0,
+    "failedPay": 0,
+    "totalCharged": 237800,
+    "expectedCharged": 237800,
+    "ledgerBalanced": true
+  }
+}
