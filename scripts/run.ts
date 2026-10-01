@@ -8,6 +8,7 @@
 // results/<scenario>__<mode>/. The mode (baseline or ft) is read from the
 // running system, never assumed.
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { runWorkload, type Rec } from './workload.ts';
@@ -16,9 +17,9 @@ import { computeMetrics } from './metrics.ts';
 import { consistencyFrom, rebuildLog, report, writeJsonlGz, ms, pctStr, s1 } from './report.ts';
 
 const exec = promisify(execFile);
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const GATEWAY = 'http://localhost:8080';
-const INSTANCES = [3011, 3012, 3021, 3022, 3031];
+const INSTANCES = [3011, 3012, 3021, 3022, 3031, 3041, 3042];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

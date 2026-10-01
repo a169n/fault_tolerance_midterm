@@ -7,11 +7,12 @@
 //
 //   node --experimental-strip-types scripts/recompute.ts
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { SCENARIOS } from './scenarios.ts';
 import { consistencyFrom, rebuildLog, readJsonl, report } from './report.ts';
 import type { Rec } from './workload.ts';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIR = `${ROOT}results`;
 
 for (const entry of readdirSync(DIR, { withFileTypes: true })) {

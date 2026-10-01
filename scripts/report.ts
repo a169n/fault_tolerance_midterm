@@ -2,12 +2,13 @@
 // (which measures) and scripts/recompute.ts (which re-derives them from stored
 // raw data when a definition changes, without re-running the experiments).
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { SCENARIOS } from './scenarios.ts';
 import type { Rec } from './workload.ts';
 import type { Metrics } from './metrics.ts';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 /** Raw data is stored gzipped (20x smaller); read either form transparently. */
 export function readJsonl(path: string): any[] {

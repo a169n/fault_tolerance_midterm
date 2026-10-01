@@ -7,10 +7,11 @@
 // usually healed itself long before and the command is a no-op, so the
 // difference in measured MTTR is exactly the value of the automatic mechanisms.
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 export const dc = async (...args: string[]): Promise<void> => {
   await exec('docker', ['compose', ...args], { cwd: ROOT }).catch((e) => {
