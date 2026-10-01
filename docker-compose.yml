@@ -2,9 +2,12 @@
 # Fault-tolerant:  FT_ENABLED=1 RESTART_POLICY=unless-stopped docker compose up -d --build
 #
 # Hardware / infrastructure fault tolerance demonstrated here:
-#   1. Service replication + load balancing (student-1/2, payment-1/2 behind the gateway)
-#   2. PostgreSQL streaming replication (primary + hot standby, read failover in src/db.ts)
+#   1. Service replication + load balancing (student, payment and timetable pairs behind the gateway)
+#   2. PostgreSQL streaming replication (primary + hot standby, read failover in app/db.py)
 #   3. Self-healing via container restart policy (the Compose analogue of a k8s ReplicaSet)
+#
+# Monitoring is opt-in, so the measured configuration stays exactly as it was:
+#   docker compose --profile monitoring up -d      Prometheus on http://localhost:9090
 
 x-service: &service
   build: .
@@ -31,6 +34,11 @@ services:
       # so trust auth is acceptable here and keeps pg_hba out of the setup. A real
       # deployment would use scram-sha-256 plus a replication-only pg_hba entry.
       POSTGRES_HOST_AUTH_METHOD: trust
+      # Storage-level information redundancy: every 8 kB page carries a checksum,
+      # so a page corrupted on disk is reported on read instead of silently
+      # returning wrong data. The standby inherits it through pg_basebackup.
+      # Takes effect on a fresh volume only (docker compose down -v).
+      POSTGRES_INITDB_ARGS: --data-checksums
     command: postgres -c hba_file=/etc/postgresql/pg_hba.conf -c wal_level=replica -c max_wal_senders=10 -c max_replication_slots=10 -c hot_standby=on
     volumes:
       - ./sql:/docker-entrypoint-initdb.d:ro
@@ -44,7 +52,7 @@ services:
       retries: 30
 
   # Hot standby, cloned with pg_basebackup on first boot. Serves reads when the
-  # primary is down (src/db.ts read failover).
+  # primary is down (app/db.py read failover).
   postgres-replica:
     image: postgres:16
     restart: ${RESTART_POLICY:-no}
@@ -75,6 +83,7 @@ services:
       STUDENT_URLS: http://student-1:3000,http://student-2:3000
       PAYMENT_URLS: http://payment-1:3000,http://payment-2:3000
       TRANSCRIPT_URLS: http://transcript-1:3000
+      TIMETABLE_URLS: http://timetable-1:3000,http://timetable-2:3000
     ports: ["8080:8080"]
 
   student-1:
@@ -106,6 +115,27 @@ services:
     command: uvicorn app.transcript:app --host 0.0.0.0 --port 3000
     environment: { <<: *service-env, SERVICE_NAME: transcript-1 }
     ports: ["3031:3000"]
+
+  # Replicated so that a job survives the loss of the instance running it: the
+  # other one adopts it when the lease expires (app/timetable.py).
+  timetable-1:
+    <<: *service
+    command: uvicorn app.timetable:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: timetable-1 }
+    ports: ["3041:3000"]
+
+  timetable-2:
+    <<: *service
+    command: uvicorn app.timetable:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: timetable-2 }
+    ports: ["3042:3000"]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
 
 volumes:
   pgprimary:

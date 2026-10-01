@@ -1,3 +1,4 @@
 node_modules/
 logs/*.jsonl
 .env
+__pycache__/

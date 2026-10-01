@@ -14,6 +14,8 @@
     "up:ft": "printf 'FT_ENABLED=1\\nRESTART_POLICY=unless-stopped\\n' > .env && docker compose up -d --build",
     "exp": "node --experimental-strip-types scripts/run.ts",
     "campaign": "bash scripts/campaign.sh",
+    "demo": "bash scripts/demo.sh",
+    "monitoring": "docker compose --profile monitoring up -d",
     "mode": "curl -s localhost:8080/health | head -c 40; echo"
   }
 }
