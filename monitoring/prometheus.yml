@@ -1,0 +1,28 @@
+# Scrapes GET /metrics on every application instance (rendered by app/eventlog.py).
+#
+# Prometheus' own `up` series is a second, independent health check: it drops to 0
+# within one scrape of an instance going silent, without relying on the gateway.
+#
+# Useful queries (http://localhost:9090/graph):
+#   up{job="university"}                                                   which instances answer
+#   ft_instance_up                                                         the gateway's own verdict
+#   sum by (svc) (rate(ft_events_total{kind="request",outcome=~"5.."}[15s]))   server errors per second
+#   sum by (outcome) (rate(ft_events_total{kind="recovery"}[30s]))         retries, dedup, rollbacks, resumed jobs
+#   ft_events_total{kind="breaker",outcome="open"}                         circuit-breaker openings
+#   sum by (outcome) (rate(ft_events_total{kind="degraded"}[15s]))         replica reads and stale-cache answers
+global:
+  scrape_interval: 2s
+  scrape_timeout: 1s
+
+scrape_configs:
+  - job_name: university
+    static_configs:
+      - targets:
+          - gateway:8080
+          - student-1:3000
+          - student-2:3000
+          - payment-1:3000
+          - payment-2:3000
+          - transcript-1:3000
+          - timetable-1:3000
+          - timetable-2:3000
