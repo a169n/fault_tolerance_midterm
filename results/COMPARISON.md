@@ -56,7 +56,7 @@ half the time -- which is precisely why request-based availability must also be 
 worse, and the explanation matters. It returned 532 errors against the
 baseline's 35, but those errors are payment *writes* failing fast: a hot
 standby is read-only, so with the primary down there is nowhere for a write to go, and
-failing in 20 ms is the correct behaviour. Meanwhile reads stayed up --
+failing in 5 ms (median) is the correct behaviour. Meanwhile reads stayed up --
 169 served from the standby and
 1422 from the stale cache -- and the client-visible outage was zero.
 The baseline's low error count is an artefact: with no timeout, 20 requests hung for the
@@ -67,12 +67,26 @@ unavailable for 10.0 s (time-based availability
 better in a ratio whose denominator it destroys.
 
 **Network / service timeout.** Neither version lost a request, so availability says
-nothing. Latency says everything: baseline p99 was 24 ms -- the full injected
-delay, paid by every client unlucky enough to be routed to the slow instance -- against
-848 ms with fault tolerance, where the 800 ms per-attempt timeout fired and
-the retry landed on the healthy replica. 245 requests were rescued this way. This
-is the scenario a liveness probe cannot catch: the slow instance kept answering
-/health in milliseconds throughout.
+nothing; latency and throughput say everything. In the baseline every request routed
+to the slow instance paid the full injected delay: 80 requests took over a
+second, the slowest 3021 ms. They are invisible in the baseline's p99
+(24 ms) only because they are 0.97 % of the run -- a worker
+stuck for 3 s issues no further requests, the same denominator effect as in the
+database-failure row. The cost shows up as throughput instead: during the fault the
+baseline served 11 requests/s, against 178/s before it. With fault tolerance
+the 800 ms per-attempt timeout fired and the retry landed on the healthy replica:
+3 requests over a second, a worst case of 1201 ms (the timeout plus one fast
+retry, which is also why its p99 is 848 ms), and 33 requests/s during the
+fault -- 2.9x the baseline, but still far below the 177/s before it.
+245 requests were rescued by retry.
+
+The remaining loss has a precise cause. Every request first routed to the slow
+instance still waits out the whole timeout, because nothing removes that instance
+from rotation: its /health stays fast, so the health check keeps it in, and the
+circuit breaker is kept per *pool*, so each successful retry on student-2 resets it
+(0 openings in this run). A breaker per *instance* -- outlier ejection -- would
+take student-1 out after a few timeouts and recover the remaining throughput. This
+is the scenario a liveness probe cannot catch.
 
 **Hardware / node failure.** Killing student-1 and payment-1 together cost the baseline
 1845 requests (14.80 %) and the fault-tolerant version
@@ -88,13 +102,19 @@ charge. The fault-tolerant version's recovery sweep rolled back
 in `pending` -- money neither charged nor released, with no process that will ever
 reconcile them -- and charged 307 students twice.
 
-**High load.** Raising concurrency from 10 to 110 workers broke neither version's
-availability, and throughput was comparable (40882 vs 39217 requests).
-The difference is that the baseline began failing 50 s into the overload and lost
-96 requests, while the fault-tolerant version lost none at a p95 of
-150 ms. Duplicate charges tell the sharper story: 1561 in the baseline,
-because overload is exactly when clients retry and exactly when a system without
-idempotency keys charges them twice.
+**High load.** Raising concurrency from 10 to 110 workers broke neither version, and
+throughput was comparable (40882 vs 39217 requests). Both rows show failures --
+96 and 66 -- but 96 and 66 of them are requests that were still in flight when the
+observation window closed (`abandoned_at_window_close`): with 110 workers about a
+hundred requests are always in flight, so the cut-off itself produces them. That is
+also what the ~50 s "detection time" in the headline table measures: the window
+closing, not a reaction to load. Not one request failed because of the overload in
+either version. Latency rose in both (p95 135 ms baseline, 150 ms fault-tolerant;
+at 10 workers it is 13-20 ms in every other run), so the platform was loaded but not saturated --
+this run shows headroom, not overload protection. The duplicate charges
+(1561 in the baseline) are the largest of the campaign simply because the most
+payments were sent: in the baseline every client resend becomes a second charge,
+under any load.
 
 ## 4. Which mechanism did the work
 
@@ -117,7 +137,10 @@ standby.
 ## 5. Theoretical vs measured availability
 
 A series-parallel model of the platform: gateway (single) -> student (2 replicas)
--> payment (2 replicas) -> transcript (single) -> database (single writable primary).
+-> payment (2 replicas) -> transcript (single) -> database (primary + hot standby,
+a parallel pair for reads; the fault-tolerant formula treats it so, the baseline
+cannot fail over and has all five in series). REPORT.md §4.3 extends this with a
+realistic manual-repair MTTR and the shared host.
 
 Assumption: each component has an MTTF of 720 h (one failure per
 component per month). MTTR is the campaign-measured value for each version
@@ -130,8 +153,10 @@ no outage measured, 3 s assumed fault-tolerant).
 | Predicted system availability | 99.998071 % | 99.999769 % |
 | Measured (time-based, under injected faults) | 99.74 % | 100.00 % |
 
-The predicted figures are far higher than the measured ones, and the discrepancy
-is expected rather than an error: the model assumes faults arrive at the natural
+For the baseline the prediction is far higher than the measurement. For the
+fault-tolerant version the measured 100 % is a censored value -- no outage was
+observed at all -- so it is consistent with the prediction but cannot confirm it.
+The baseline gap is expected rather than an error: the model assumes faults arrive at the natural
 component failure rate, whereas the campaign injects one fault every 70 s --
 roughly 37029x the assumed rate. The model
 also assumes independent failures, which the node-failure scenario deliberately
@@ -150,6 +175,11 @@ measured results reproduce that ordering.
   flight as abandoned. Only the repeated runs are reported. The window length of
   every run is published in `EXPERIMENT-LOG.md` so this class of distortion is
   visible rather than hidden.
+* **Requests cut off by the window close count as failures.** This is the stated
+  definition (METHODOLOGY §2), and it is harmless at 10 workers, where it adds at
+  most a handful per run. At 110 workers it produces every failure in the high-load
+  row (96 baseline, 66 fault-tolerant) and the ~50 s "detection time", which
+  is the window closing. Read that row's failures and detection time as zero.
 * **Request-based availability flatters the baseline.** A blocked client issues no
   further requests, so hangs shrink the denominator instead of showing up as
   failures. This is why time-based availability and absolute throughput are

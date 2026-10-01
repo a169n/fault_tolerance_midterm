@@ -4,13 +4,15 @@
 //
 //   node --experimental-strip-types scripts/compare.ts
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { SCENARIOS } from './scenarios.ts';
+import { readJsonl } from './report.ts';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIR = `${ROOT}results`;
 const ORDER = ['app-crash', 'db-failure', 'net-timeout', 'node-failure', 'txn-interrupt', 'high-load'];
 
-type Run = { scenario: string; mode: string; t0: number; t1: number; metrics: any; consistency: any };
+type Run = { scenario: string; mode: string; t0: number; t1: number; injectTs: number; repairTs: number; metrics: any; consistency: any };
 
 const runs: Run[] = readdirSync(DIR, { withFileTypes: true })
   .filter((d) => d.isDirectory() && existsSync(`${DIR}/${d.name}/metrics.json`))
@@ -19,6 +21,30 @@ const runs: Run[] = readdirSync(DIR, { withFileTypes: true })
 const get = (scenario: string, mode: string) => runs.find((r) => r.scenario === scenario && r.mode === mode);
 const pct = (v: number | null) => (v == null ? 'n/a' : `${(v * 100).toFixed(2)} %`);
 const ms = (v: number | null) => (v == null ? '--' : `${v} ms`);
+
+// Figures the per-run metrics do not carry, straight from the raw workload log:
+//   before/during  throughput before and during the fault
+//   slow           requests slower than 1 s. A percentile cannot show a slow
+//                  minority: in net-timeout the baseline's 3 s requests are under
+//                  1 % of the run, so its p99 looks perfectly healthy.
+//   abandoned      requests still in flight when the window closed. They count as
+//                  failed (METHODOLOGY §2) but say nothing about the system: with
+//                  110 workers in high-load, ~100 requests are always in flight.
+//   failedMedianMs how fast the server answered the requests it failed (the run's
+//                  p50/p95 cover successful requests only).
+function faultWindow(scenario: string, mode: string) {
+  const r = get(scenario, mode)!;
+  const recs = readJsonl(`${DIR}/${scenario}__${mode}/workload.jsonl`);
+  const rate = (from: number, to: number) => recs.filter((x) => x.ts >= from && x.ts < to).length / ((to - from) / 1000);
+  const failedMs = recs.filter((x) => !x.ok && x.status !== 0).map((x) => x.ms).sort((a, b) => a - b);
+  return {
+    before: rate(r.t0, r.injectTs),
+    during: rate(r.injectTs, r.repairTs),
+    slow: recs.filter((x) => x.ms > 1000).length,
+    abandoned: recs.filter((x) => x.abandoned).length,
+    failedMedianMs: failedMs.length ? failedMs[Math.floor(failedMs.length / 2)] : null,
+  };
+}
 
 // ----------------------------------------------------------- campaign totals
 function totals(mode: string) {
@@ -55,6 +81,11 @@ function totals(mode: string) {
 
 const B = totals('baseline');
 const F = totals('ft');
+const NTB = faultWindow('net-timeout', 'baseline');
+const NTF = faultWindow('net-timeout', 'ft');
+const HLB = faultWindow('high-load', 'baseline');
+const HLF = faultWindow('high-load', 'ft');
+const DBF = faultWindow('db-failure', 'ft');
 
 // ------------------------------------------------- theoretical availability
 // Series-parallel model. Component MTTF values are assumptions (stated as such);
@@ -139,7 +170,7 @@ half the time -- which is precisely why request-based availability must also be 
 worse, and the explanation matters. It returned ${get('db-failure','ft')!.metrics.requests.failed} errors against the
 baseline's ${get('db-failure','baseline')!.metrics.requests.failed}, but those errors are payment *writes* failing fast: a hot
 standby is read-only, so with the primary down there is nowhere for a write to go, and
-failing in ${get('db-failure','ft')!.metrics.response.p95Ms} ms is the correct behaviour. Meanwhile reads stayed up --
+failing in ${DBF.failedMedianMs} ms (median) is the correct behaviour. Meanwhile reads stayed up --
 ${get('db-failure','ft')!.metrics.mechanisms.replicaReads} served from the standby and
 ${get('db-failure','ft')!.metrics.requests.degraded} from the stale cache -- and the client-visible outage was zero.
 The baseline's low error count is an artefact: with no timeout, ${get('db-failure','baseline')!.metrics.requests.clientTimeouts} requests hung for the
@@ -150,12 +181,26 @@ ${pct(get('db-failure','baseline')!.metrics.availability.timeBased)}). Hanging i
 better in a ratio whose denominator it destroys.
 
 **Network / service timeout.** Neither version lost a request, so availability says
-nothing. Latency says everything: baseline p99 was ${get('net-timeout','baseline')!.metrics.response.p99Ms} ms -- the full injected
-delay, paid by every client unlucky enough to be routed to the slow instance -- against
-${get('net-timeout','ft')!.metrics.response.p99Ms} ms with fault tolerance, where the 800 ms per-attempt timeout fired and
-the retry landed on the healthy replica. ${get('net-timeout','ft')!.metrics.mechanisms.retriesThatSucceeded} requests were rescued this way. This
-is the scenario a liveness probe cannot catch: the slow instance kept answering
-/health in milliseconds throughout.
+nothing; latency and throughput say everything. In the baseline every request routed
+to the slow instance paid the full injected delay: ${NTB.slow} requests took over a
+second, the slowest ${get('net-timeout','baseline')!.metrics.response.maxMs} ms. They are invisible in the baseline's p99
+(${get('net-timeout','baseline')!.metrics.response.p99Ms} ms) only because they are ${pct(NTB.slow / get('net-timeout','baseline')!.metrics.requests.total)} of the run -- a worker
+stuck for 3 s issues no further requests, the same denominator effect as in the
+database-failure row. The cost shows up as throughput instead: during the fault the
+baseline served ${NTB.during.toFixed(0)} requests/s, against ${NTB.before.toFixed(0)}/s before it. With fault tolerance
+the 800 ms per-attempt timeout fired and the retry landed on the healthy replica:
+${NTF.slow} requests over a second, a worst case of ${get('net-timeout','ft')!.metrics.response.maxMs} ms (the timeout plus one fast
+retry, which is also why its p99 is ${get('net-timeout','ft')!.metrics.response.p99Ms} ms), and ${NTF.during.toFixed(0)} requests/s during the
+fault -- ${(NTF.during / NTB.during).toFixed(1)}x the baseline, but still far below the ${NTF.before.toFixed(0)}/s before it.
+${get('net-timeout','ft')!.metrics.mechanisms.retriesThatSucceeded} requests were rescued by retry.
+
+The remaining loss has a precise cause. Every request first routed to the slow
+instance still waits out the whole timeout, because nothing removes that instance
+from rotation: its /health stays fast, so the health check keeps it in, and the
+circuit breaker is kept per *pool*, so each successful retry on student-2 resets it
+(${get('net-timeout','ft')!.metrics.mechanisms.breakerOpened} openings in this run). A breaker per *instance* -- outlier ejection -- would
+take student-1 out after a few timeouts and recover the remaining throughput. This
+is the scenario a liveness probe cannot catch.
 
 **Hardware / node failure.** Killing student-1 and payment-1 together cost the baseline
 ${get('node-failure','baseline')!.metrics.requests.failed} requests (${pct(1 - get('node-failure','baseline')!.metrics.availability.requestBased!)}) and the fault-tolerant version
@@ -171,13 +216,19 @@ ${get('txn-interrupt','ft')!.consistency.duplicateCharges} duplicate charges. Th
 in \`pending\` -- money neither charged nor released, with no process that will ever
 reconcile them -- and charged ${get('txn-interrupt','baseline')!.consistency.duplicateCharges} students twice.
 
-**High load.** Raising concurrency from 10 to 110 workers broke neither version's
-availability, and throughput was comparable (${get('high-load','baseline')!.metrics.requests.total} vs ${get('high-load','ft')!.metrics.requests.total} requests).
-The difference is that the baseline began failing ${((get('high-load','baseline')!.metrics.response.detectionMs ?? 0)/1000).toFixed(0)} s into the overload and lost
-${get('high-load','baseline')!.metrics.requests.failed} requests, while the fault-tolerant version lost none at a p95 of
-${get('high-load','ft')!.metrics.response.p95Ms} ms. Duplicate charges tell the sharper story: ${get('high-load','baseline')!.consistency.duplicateCharges} in the baseline,
-because overload is exactly when clients retry and exactly when a system without
-idempotency keys charges them twice.
+**High load.** Raising concurrency from 10 to 110 workers broke neither version, and
+throughput was comparable (${get('high-load','baseline')!.metrics.requests.total} vs ${get('high-load','ft')!.metrics.requests.total} requests). Both rows show failures --
+${get('high-load','baseline')!.metrics.requests.failed} and ${get('high-load','ft')!.metrics.requests.failed} -- but ${HLB.abandoned} and ${HLF.abandoned} of them are requests that were still in flight when the
+observation window closed (\`abandoned_at_window_close\`): with 110 workers about a
+hundred requests are always in flight, so the cut-off itself produces them. That is
+also what the ~${((get('high-load','baseline')!.metrics.response.detectionMs ?? 0)/1000).toFixed(0)} s "detection time" in the headline table measures: the window
+closing, not a reaction to load. Not one request failed because of the overload in
+either version. Latency rose in both (p95 ${get('high-load','baseline')!.metrics.response.p95Ms} ms baseline, ${get('high-load','ft')!.metrics.response.p95Ms} ms fault-tolerant;
+at 10 workers it is 13-20 ms in every other run), so the platform was loaded but not saturated --
+this run shows headroom, not overload protection. The duplicate charges
+(${get('high-load','baseline')!.consistency.duplicateCharges} in the baseline) are the largest of the campaign simply because the most
+payments were sent: in the baseline every client resend becomes a second charge,
+under any load.
 
 ## 4. Which mechanism did the work
 
@@ -195,7 +246,10 @@ standby.
 ## 5. Theoretical vs measured availability
 
 A series-parallel model of the platform: gateway (single) -> student (2 replicas)
--> payment (2 replicas) -> transcript (single) -> database (single writable primary).
+-> payment (2 replicas) -> transcript (single) -> database (primary + hot standby,
+a parallel pair for reads; the fault-tolerant formula treats it so, the baseline
+cannot fail over and has all five in series). REPORT.md §4.3 extends this with a
+realistic manual-repair MTTR and the shared host.
 
 Assumption: each component has an MTTF of ${COMPONENT_MTTF_H} h (one failure per
 component per month). MTTR is the campaign-measured value for each version
@@ -208,8 +262,10 @@ ${F.mttr == null ? 'no outage measured, 3 s assumed' : (F.mttr / 1000).toFixed(1
 | Predicted system availability | ${(theoreticalBase * 100).toFixed(6)} % | ${(theoreticalFt * 100).toFixed(6)} % |
 | Measured (time-based, under injected faults) | ${pct(B.availabilityTime)} | ${pct(F.availabilityTime)} |
 
-The predicted figures are far higher than the measured ones, and the discrepancy
-is expected rather than an error: the model assumes faults arrive at the natural
+For the baseline the prediction is far higher than the measurement. For the
+fault-tolerant version the measured 100 % is a censored value -- no outage was
+observed at all -- so it is consistent with the prediction but cannot confirm it.
+The baseline gap is expected rather than an error: the model assumes faults arrive at the natural
 component failure rate, whereas the campaign injects one fault every 70 s --
 roughly ${(COMPONENT_MTTF_H * 3600 / 70).toFixed(0)}x the assumed rate. The model
 also assumes independent failures, which the node-failure scenario deliberately
@@ -228,6 +284,11 @@ measured results reproduce that ordering.
   flight as abandoned. Only the repeated runs are reported. The window length of
   every run is published in \`EXPERIMENT-LOG.md\` so this class of distortion is
   visible rather than hidden.
+* **Requests cut off by the window close count as failures.** This is the stated
+  definition (METHODOLOGY §2), and it is harmless at 10 workers, where it adds at
+  most a handful per run. At 110 workers it produces every failure in the high-load
+  row (${HLB.abandoned} baseline, ${HLF.abandoned} fault-tolerant) and the ~${((get('high-load','ft')!.metrics.response.detectionMs ?? 0)/1000).toFixed(0)} s "detection time", which
+  is the window closing. Read that row's failures and detection time as zero.
 * **Request-based availability flatters the baseline.** A blocked client issues no
   further requests, so hangs shrink the denominator instead of showing up as
   failures. This is why time-based availability and absolute throughput are
