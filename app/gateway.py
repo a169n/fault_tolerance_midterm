@@ -31,6 +31,7 @@ POOLS: Dict[str, List[str]] = {
     "students": _urls(os.environ.get("STUDENT_URLS")),
     "payments": _urls(os.environ.get("PAYMENT_URLS")),
     "transcripts": _urls(os.environ.get("TRANSCRIPT_URLS")),
+    "timetables": _urls(os.environ.get("TIMETABLE_URLS")),
 }
 
 HEALTH_INTERVAL_MS = int(os.environ.get("HEALTH_INTERVAL_MS", 1000))
