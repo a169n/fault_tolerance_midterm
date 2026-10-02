@@ -3,4 +3,4 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
-CMD ["uvicorn", "app.gateway:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.services.gateway:app", "--host", "0.0.0.0", "--port", "8080"]

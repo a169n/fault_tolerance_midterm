@@ -80,9 +80,9 @@ retry. Collapsing them into one number hides which of the two actually happened.
 
 ## Raw data
 
-* `workload.jsonl` -- one line per client request (8704 lines)
-* `events.jsonl` -- one line per service-side event in this window (33229 lines)
-* `metrics.json` -- the computed metrics above, machine-readable
+* `logs/db-failure__ft/workload.jsonl.gz` -- one line per client request (8704 lines)
+* `logs/db-failure__ft/events.jsonl.gz` -- one line per service-side event in this window (33229 lines)
+* `metrics.json` (next to this report) -- the computed metrics above, machine-readable
 
-Metric definitions are in `scripts/metrics.ts`; every value here is derived from
-the two raw files in this directory and can be recomputed from them.
+Metric definitions are in `experiments/metrics.ts`; every value here is derived from
+the two raw files and can be recomputed from them.

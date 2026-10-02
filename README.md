@@ -1,163 +1,120 @@
 # Fault-Tolerant University Information System
 
-Baseline and fault-tolerant versions of the same distributed university platform,
-built so the two can be compared under identical injected failures.
+A small distributed university platform (students, payments, transcripts,
+timetables), built **twice**: a **baseline** and a **fault-tolerant** version. Both
+versions get the same faults injected, and the measured difference shows what the
+fault-tolerance mechanisms buy.
 
-Stack: **Python + FastAPI** services, PostgreSQL with streaming replication,
-Docker Compose. Measurement harness in TypeScript (Node), which talks to the
-platform only over HTTP and the shared event log, so it is independent of the
-service implementation.
+Both versions are **one and the same code and image**. The only difference is the
+switch `FT_ENABLED=0|1` (plus `RESTART_POLICY`), so every measured difference is
+caused by the mechanisms and nothing else.
+
+Stack: Python + FastAPI, PostgreSQL 16 with streaming replication, Docker Compose,
+Prometheus. The experiment harness is TypeScript on Node 22.
+
+## Project map
+
+```text
+docker-compose.yml        the deployment: 2 replicas per service, DB primary + standby,
+                          and every infrastructure mechanism (H1–H5), labelled
+
+app/                      everything that runs inside the containers
+├── services/             WHAT the system does: the business logic
+│   ├── gateway.py          single entry point; wires the mechanisms together
+│   ├── student.py          2 replicas
+│   ├── payment.py          2 replicas, the money path
+│   ├── transcript.py       1 instance, serves stale data when the DB is down
+│   ├── timetable.py        2 replicas, long-running jobs
+│   └── schedule.py         pure timetable placement algorithm
+├── fault_tolerance/      HOW it survives failures (README.md = full list)
+│   ├── software/           S1–S10, one file per mechanism
+│   │   ├── retry.py              S1 retry + exponential backoff
+│   │   ├── timeouts.py           S2 timeouts (+ S8 fail-fast writes)
+│   │   ├── circuit_breaker.py    S3
+│   │   ├── health_check.py       S4
+│   │   ├── idempotency.py        S5 no double charges
+│   │   ├── checkpoint_rollback.py S6 payments
+│   │   ├── degradation.py        S7 stale cache
+│   │   └── job_checkpoint.py     S10 timetable jobs
+│   └── infrastructure/     code side of H1 and H2
+│       ├── load_balancer.py      H1 round robin over replicas
+│       └── db_failover.py        H2 read from the standby
+├── core/                 plumbing: db.py, eventlog.py (+ /metrics), service.py
+└── fault_injection.py    /chaos endpoints the experiments use to break things
+
+config/                   PostgreSQL schema + seed data, pg_hba.conf, prometheus.yml
+
+experiments/              HOW the experiments are run
+├── scenarios.ts            the 6 failure scenarios: inject + repair
+├── workload.ts             load generator, records every request
+├── run.ts                  one experiment end to end
+├── campaign.ts             all 6 scenarios in a row
+├── metrics.ts              MTTF, MTBF, MTTR, availability, data consistency
+├── demo.ts                 live demonstration of 4 failure-and-recovery scenarios
+└── up.ts                   deploy baseline or FT (npm run up:ft | up:baseline)
+
+logs/                     raw data: logs/<scenario>__<mode>/{workload,events}.jsonl.gz
+reports/                  everything written up
+├── REPORT.md               ◀ the technical report (start here)
+├── ARCHITECTURE.md         diagrams: deployment and code layers
+├── COMPARISON.md           baseline vs fault-tolerant
+├── METHODOLOGY.md          how the experiments were run and measured
+├── EXPERIMENT-LOG.md       every run, one row each
+└── runs/<scenario>__<mode>/REPORT.md, metrics.json   one report per run (run.ts writes metrics.json)
+
+```
 
 ## Running
 
-    npm test                # self-checks: FT core, timetable, metrics (stdlib unittest)
-    npm run up:baseline     # FT_ENABLED=0, RESTART_POLICY=no
-    npm run up:ft           # FT_ENABLED=1, RESTART_POLICY=unless-stopped
-    npm run mode            # which version is currently deployed
-    npm run exp <scenario>  # one controlled experiment
-    npm run campaign        # all six scenarios against the deployed version
-    npm run demo            # live failure-and-recovery demonstration (4 scenarios)
+Same commands on Windows, macOS and Linux. Needs Docker and Node.js 22.6 or newer
+(`node --version`; with nvm: `nvm use 22`). No other dependencies.
+
+    npm run up:ft           # deploy the fault-tolerant version  (FT_ENABLED=1)
+    npm run up:baseline     # deploy the baseline                (FT_ENABLED=0)
+    npm run mode            # which version is running now
+
+    npm run demo            # live demo: app crash, DB failure, node failure, timetable
+    npm run demo -- db-failure   # just one scenario
+    npm run exp app-crash   # one controlled experiment
+    npm run campaign        # all six against the deployed version
+
     npm run monitoring      # Prometheus on http://localhost:9090
+    # Swagger UI:           http://localhost:8080/docs  (every service: :30xx/docs)
 
-After pulling the timetable service, recreate the database once so the new
-tables and page checksums are created: `docker compose down -v`. On Windows,
-where `python3` is not on the path, run the tests with
-`python -m unittest discover -s tests -t .`.
+After pulling schema changes, recreate the database once: `docker compose down -v`.
 
-The full technical report is **`REPORT.md`**; the architecture diagram is in
-`docs/ARCHITECTURE.md`.
+## Services and ports
 
-Both versions are the **same image**; only `FT_ENABLED` and `RESTART_POLICY`
-differ, so every measured difference is attributable to the fault-tolerance
-mechanisms. The chosen mode is written to `.env` (which Compose reads), and every
-log line carries `"ft": 0|1`, so a run can never be silently misattributed.
-
-## Services
-
-| Component | Port | Role |
+| Component | Port | Instances |
 |---|---|---|
-| gateway | 8080 | API gateway, load balancer, retry/timeout/circuit breaker/degradation |
-| student-1 / student-2 | 3011 / 3012 | Student service, replicated |
-| payment-1 / payment-2 | 3021 / 3022 | Payment service, replicated, idempotent |
-| transcript-1 | 3031 | Transcript service, degrades to cache |
-| timetable-1 / timetable-2 | 3041 / 3042 | Timetable generation jobs, checkpointed, adopted by a live replica after a crash |
-| prometheus | 9090 | Optional monitoring (`--profile monitoring`), scrapes `/metrics` on every instance |
-| postgres-primary | 55432 | Primary database |
-| postgres-replica | 55433 | Hot standby (streaming replication) |
+| gateway | 8080 | 1 |
+| student-1 / student-2 | 3011 / 3012 | 2 replicas |
+| payment-1 / payment-2 | 3021 / 3022 | 2 replicas |
+| timetable-1 / timetable-2 | 3041 / 3042 | 2 replicas |
+| transcript-1 | 3031 | 1 |
+| postgres-primary / postgres-replica | 55432 / 55433 | primary + hot standby |
+| prometheus | 9090 | optional (`--profile monitoring`) |
 
-## Fault-tolerance mechanisms
+## Breaking it by hand
 
-Hardware / infrastructure (assignment §8, two required):
-
-1. **Service replication + load balancing** — round robin over healthy instances (`app/gateway.py`)
-2. **Database replication** — PostgreSQL streaming replication with read failover to the standby (`app/db.py`)
-3. **Self-healing** — container restart policy, the Compose analogue of a Kubernetes ReplicaSet
-4. **Storage checksums** — `initdb --data-checksums`, so a corrupted page is detected on read (`docker-compose.yml`)
-5. **Independent monitoring** — Prometheus `up` detects a silent instance without relying on the gateway (`monitoring/prometheus.yml`)
-
-RAID and ECC memory are covered as documented mechanisms in `REPORT.md` §6.
-
-Software (assignment §9, four required):
-
-1. **Retry with exponential backoff and full jitter** — `call()` in `app/ft.py`
-2. **Timeouts** — per-attempt `asyncio.wait_for`, same file
-3. **Circuit breaker** — closed / open / half-open, same file
-4. **Health checks** — the gateway polls `/health` every second; the transition timestamp is the measured detection time
-5. **Idempotent processing + duplicate detection** — `UNIQUE idempotency_key` + `ON CONFLICT DO NOTHING` (`app/payment.py`)
-6. **Checkpointing, rollback and recovery** — a `pending` checkpoint is written before the charge and reconciled by a boot-time and periodic sweep (`app/payment.py`)
-7. **Graceful degradation** — stale-but-flagged reads when the database or a whole service is unreachable (`app/gateway.py`, `app/transcript.py`)
-8. **Checkpointing of long-running jobs** — timetable generation saves its progress every 10 placements under a lease; when the owner dies, a live replica adopts the job (`FOR UPDATE SKIP LOCKED`) and resumes it from the checkpoint (`app/timetable.py`, `app/schedule.py`)
-
-## Layout
-
-    app/            FastAPI services
-      ft.py         retry, timeout, circuit breaker  <- the core, dependency-free
-      db.py         Postgres access, primary -> replica read failover
-      eventlog.py   JSONL event log (the source of every metric) + Prometheus exposition
-      chaos.py      in-process fault injection control plane
-      service.py    shared app factory: request logging, /metrics, error mapping
-      schedule.py   deterministic timetable placement, dependency-free
-      gateway.py student.py payment.py transcript.py timetable.py
-    scripts/        experiment harness
-      workload.ts   load generator, records every request
-      scenarios.ts  the six required failure scenarios
-      metrics.ts    MTTF / MTBF / MTTR / availability, with definitions
-      run.ts        one experiment end to end, writes raw data + a report
-      demo.sh       live demonstration of four failure-and-recovery scenarios
-    tests/          self-checks: test_ft.py (core), test_schedule.py, test_metrics.py
-    monitoring/     Prometheus scrape configuration
-    docs/           architecture diagram
-    results/        one directory per experiment, each with its own REPORT.md
-    REPORT.md       the final technical report
-
-## Results and documentation
-
-| Document | What it holds |
-|---|---|
-| `REPORT.md` | The technical report in the assignment's structure: requirements, fault model, reliability analysis (block diagrams, fault tree, FMEA), hardware and software design, results, discussion |
-| `docs/ARCHITECTURE.md` | Deployment diagram, components, request flow |
-| `results/EXPERIMENT-LOG.md` | Every run in execution order, one row each, regenerated from the raw metrics |
-| `results/COMPARISON.md` | Baseline vs fault-tolerant: headline table, per-scenario analysis, campaign totals, theoretical vs measured availability, threats to validity |
-| `results/METHODOLOGY.md` | Workload, timing, metric definitions, consistency checks, reproduction steps, and the campaign history including which defects forced re-runs |
-| `results/<scenario>__<mode>/REPORT.md` | One self-contained report per run: what was injected, the timeline, measured results, which mechanisms fired, consistency verdicts |
-| `results/<scenario>__<mode>/*.jsonl` | The raw per-request and per-event data every number is derived from |
-
-Regenerate the comparison after any run:
-
-    node --experimental-strip-types scripts/compare.ts
-
-## Fault injection
-
-    curl -X POST localhost:3011/chaos -d '{"latencyMs":3000}'   # service slowdown
-    curl -X POST localhost:3011/chaos -d '{"failRate":0.5}'     # flaky upstream
-    curl -X POST localhost:3011/chaos/crash                     # application crash
-    curl -X POST localhost:3021/chaos -d '{"crashAfterCheckpoint":true}'  # interrupted transaction
-    docker compose stop postgres-primary                        # database failure
-    docker compose kill student-1 payment-1                     # node failure
-
-    # interrupted timetable job: start one, then crash the instance that owns it
-    curl -X POST localhost:8080/api/timetables -H 'content-type: application/json' -d '{"term":"2026-fall"}'
-    curl -X POST localhost:3041/chaos/crash                     # if the answer said timetable-1
-    curl localhost:8080/api/timetables/2026-fall                # state, owner, progress
+    curl -X POST localhost:3011/chaos/crash                              # application crash
+    curl -X POST localhost:3011/chaos -d '{"latencyMs":3000}'            # slow service
+    curl -X POST localhost:3021/chaos -d '{"crashAfterCheckpoint":true}' # interrupted payment
+    docker compose stop postgres-primary                                 # database failure
+    docker compose kill student-1 payment-1                              # node failure
 
 `docker compose kill` is an operator stop and deliberately does **not** trip the
-restart policy, which is what makes it a faithful "the node is gone" simulation.
-An application crash must therefore be injected from inside the process
-(`/chaos/crash`), not with `docker kill`.
+restart policy, which makes it a faithful "the node is gone" simulation. An
+application crash must therefore come from inside the process (`/chaos/crash`).
 
 ## Measurement
 
-Every service appends JSON lines to `logs/events.jsonl`:
+Every service appends one JSON line per event to `logs/events.jsonl`:
 
     {"ts":…,"svc":"gateway","ft":1,"kind":"health","target":"http://student-1:3000","ok":false}
-    {"ts":…,"svc":"gateway","ft":1,"kind":"attempt","target":"students","ok":false,"attempts":1}
     {"ts":…,"svc":"gateway","ft":1,"kind":"route","instance":"http://student-2:3000","attempts":2}
     {"ts":…,"svc":"payment-1","ft":1,"kind":"recovery","action":"duplicate_suppressed"}
 
-`kind`: `request` `attempt` `upstream` `route` `health` `breaker` `recovery`
-`degraded` `chaos` `db` `checkpoint`.
-
-MTTF, MTBF, MTTR, availability, failure rate and detection/recovery times are all
-derived from this file plus the per-request workload log. Definitions live at the
-top of `scripts/metrics.ts`; no number in any report is asserted without raw data
-behind it.
-
-The same events are counted live per process and exposed on `GET /metrics` of every
-service as `ft_events_total{kind, outcome}`, plus `ft_instance_up{target}` on the
-gateway. Example queries are at the top of `monitoring/prometheus.yml`.
-
-## Assumptions
-
-* Trust authentication inside the Compose network (`pg/pg_hba.conf`) — the database
-  is not reachable from outside it. Production would use scram-sha-256 with a
-  replication-scoped entry.
-* Writes go only to the primary; the standby serves reads. Automatic promotion of
-  the standby is out of scope and is discussed as a limitation.
-* One container models one node. The node-failure scenario kills the two containers
-  designated as sharing a node.
-* The "operator repair" at T+45s is issued in both versions so that baseline MTTR
-  reflects a human response rather than infinity.
-
-`results-typescript-prototype/` holds an earlier campaign run against a Node/TypeScript
-implementation of the same services, kept only for comparison; the FastAPI
-implementation in `app/` is the submitted system.
+Every metric in `reports/` is computed from this log plus the per-request workload
+log; no number is asserted without raw data behind it. The same events are counted
+live on `GET /metrics` of every service for Prometheus.

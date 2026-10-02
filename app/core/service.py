@@ -1,8 +1,3 @@
-"""Shared FastAPI wiring: request logging, /metrics, service identification and pool lifecycle.
-
-Used by every service so that all of them produce the same event-log schema,
-which is what makes a single metrics calculator possible.
-"""
 from __future__ import annotations
 
 import time
@@ -13,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .eventlog import SERVICE, log, metrics_text
-from .ft import UpstreamError
+from .errors import UpstreamError
 
 
 def create_app(with_db: bool = True, lifespan=None) -> FastAPI:
@@ -28,10 +23,8 @@ def create_app(with_db: bool = True, lifespan=None) -> FastAPI:
 
         lifespan = _lifespan
 
-    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title=SERVICE, lifespan=lifespan, redoc_url=None)  # Swagger UI: /docs
 
-    # Registered before the services' own routes, so `/{student_id}` and friends
-    # never swallow it.
     @app.get("/metrics")
     async def _metrics():
         return PlainTextResponse(metrics_text(), media_type="text/plain; version=0.0.4")
@@ -47,12 +40,10 @@ def create_app(with_db: bool = True, lifespan=None) -> FastAPI:
             response = await call_next(request)
         except UpstreamError as exc:
             response = JSONResponse(status_code=exc.status or 503, content={"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001 - a crashing handler is still an observable failure
+        except Exception as exc:
             response = JSONResponse(status_code=503, content={"error": str(exc)})
         ms = int((time.time() - started) * 1000)
-        # One line per inbound request: this is what the metrics analysis consumes.
-        # Probes and scrapes are not workload and would only dilute it.
-        if request.url.path not in ("/health", "/metrics"):
+        if request.url.path not in ("/health", "/metrics", "/docs", "/openapi.json"):  # not workload
             log(kind="request", target=f"{request.method} {request.url.path}",
                 ok=response.status_code < 500, status=response.status_code, ms=ms)
         response.headers["x-served-by"] = SERVICE

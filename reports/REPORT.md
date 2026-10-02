@@ -2,9 +2,9 @@
 
 Course: Fault Tolerance and Dependable Computing — Midterm project
 
-Every number in this report comes from the raw logs in `results/` or from a
-calculation shown next to it. The per-run reports, the generated comparison and
-the methodology are in `results/`; this document ties them to the dependability
+Every number in this report comes from the raw logs in `logs/` or from a
+calculation shown next to it. The per-run reports, the comparison and
+the methodology are in `reports/`; this document ties them to the dependability
 analysis and the design.
 
 ---
@@ -54,13 +54,13 @@ Set before the analysis and checked against the measurements in §10.4.
 | Assignment §4 | Where it is met |
 |---|---|
 | 1. Baseline without advanced FT | `FT_ENABLED=0`, `RESTART_POLICY=no`: same image, mechanisms off (§8.2) |
-| 2. ≥ 5 failure scenarios | 6 measured scenarios (§3.3), plus the timetable crash scenario (demo + unit tests) |
+| 2. ≥ 5 failure scenarios | 6 measured scenarios (§3.3), plus the timetable crash scenario (demo) |
 | 3. ≥ 3 independent services | student, payment, transcript, timetable, plus the gateway |
 | 4. ≥ 2 hardware/infrastructure mechanisms | replication + load balancing, database replication, self-healing restarts, storage checksums (§6.2) |
 | 5. ≥ 4 software mechanisms | ten, listed in §7 |
-| 6. Failure and recovery data | `results/*/workload.jsonl.gz`, `events.jsonl.gz`, `metrics.json` |
-| 7. Baseline vs FT comparison | §10, `results/COMPARISON.md` |
-| 8. Assumptions, decisions, experiments, results | this report, `docs/ARCHITECTURE.md`, `results/METHODOLOGY.md` |
+| 6. Failure and recovery data | `logs/*/workload.jsonl.gz`, `logs/*/events.jsonl.gz`, `reports/runs/*/metrics.json` |
+| 7. Baseline vs FT comparison | §10, `reports/COMPARISON.md` |
+| 8. Assumptions, decisions, experiments, results | this report, `reports/ARCHITECTURE.md`, `reports/METHODOLOGY.md` |
 
 ### 2.4 Assumptions
 
@@ -74,7 +74,7 @@ Set before the analysis and checked against the measurements in §10.4.
   apart from the delay that is injected deliberately. Every timestamp comes from
   one clock, so there is no clock skew in the measurements.
 * **Trusted internal network.** The database uses trust authentication inside the
-  Compose network (`pg/pg_hba.conf`). Confidentiality is out of scope.
+  Compose network (`config/postgres/pg_hba.conf`). Confidentiality is out of scope.
 * **Component failure rates** for the analytical model (§4) are assumptions,
   stated where they are used, because no field data exists for this system.
 
@@ -127,13 +127,13 @@ For a component with a constant failure rate λ:
 * unavailability q = 1 − A, and downtime per year = q × 8760 h
 
 The *measured* definitions (time bins, outages, censoring when no failure occurs)
-are in `results/METHODOLOGY.md` §5 and `scripts/metrics.ts`.
+are in `reports/METHODOLOGY.md` §5 and `experiments/metrics.ts`.
 
 ### 4.2 Component assumptions
 
 | Parameter | Value | Reason |
 |---|---|---|
-| Component MTTF | 720 h (λ = 1.39 × 10⁻³ /h) | one failure per component per month. This is the same assumption as `results/COMPARISON.md` §5 |
+| Component MTTF | 720 h (λ = 1.39 × 10⁻³ /h) | one failure per component per month. This is the same assumption as `reports/COMPARISON.md` §5 |
 | MTTR, manual repair | 0.5 h | an operator is paged, diagnoses the fault and restarts the service. This is the baseline's only repair path |
 | MTTR, automatic repair | 10 s | restart policy plus about 1 s of health-check detection. It applies to crash faults only |
 | Host MTTF / MTTR | 8760 h / 4 h | one hardware incident per year, with a replacement or re-provisioning time |
@@ -247,7 +247,7 @@ RPN = S × O × D. The scores are the team's estimates, with the evidence in the
 | 5 | Primary database down | everything hangs | 9/3/8 | 216 | 6/3/2 | 36 | standby reads, stale cache, writes fail fast (db-failure: 10 s outage → 0) |
 | 6 | Payment dies between checkpoint and commit | half-finished payment, never reconciled | 8/3/10 | 240 | 2/3/2 | 12 | recovery sweep (txn-interrupt: 2 → 0 orphans) |
 | 7 | Client resends a payment | money taken twice, silently | 9/8/10 | 720 | 1/8/1 | 8 | idempotency key (3210 → 0 duplicate charges) |
-| 8 | Timetable worker crashes mid-job | the job never finishes | 6/4/10 | 240 | 2/4/3 | 24 | checkpoint + lease adoption (unit-tested, demo) |
+| 8 | Timetable worker crashes mid-job | the job never finishes | 6/4/10 | 240 | 2/4/3 | 24 | checkpoint + lease adoption (demo) |
 | 9 | Docker host fails | total outage | 10/2/5 | 100 | 10/2/5 | 100 | none. A common-mode SPOF |
 | 10 | Disk page corrupted | wrong data served silently | 9/2/9 | 162 | 9/2/3 | 54 | page checksums detect it on read. They cannot correct it |
 | 11 | DRAM bit flip | wrong value written as if valid | 9/2/10 | 180 | 9/2/10 | 180 | needs ECC RAM (§6.5). 36 with ECC |
@@ -261,7 +261,7 @@ and the gateway (3).
 
 ### 4.6 Measured reliability metrics
 
-From the twelve-run campaign (`results/COMPARISON.md` §2): each version ran
+From the twelve-run campaign (`reports/COMPARISON.md` §2): each version ran
 423 s of observation with six injected faults.
 
 | Metric | Baseline | Fault-tolerant |
@@ -291,7 +291,7 @@ txn-interrupt.
 
 ## 5. System architecture
 
-See **`docs/ARCHITECTURE.md`** for the deployment diagram, the component table and
+See **`reports/ARCHITECTURE.md`** for the deployment diagram, the component table and
 the request flow. In short: one gateway, two replicas each of student, payment
 and timetable, one transcript service, a PostgreSQL primary with a hot standby
 fed by streaming replication, one shared JSON event log, and optionally
@@ -387,23 +387,23 @@ cannot be shown in containers, so it is documented here instead (FMEA row 11).
 
 | # | Mechanism | Where | How it works | Evidence (FT campaign) |
 |---|---|---|---|---|
-| S1 | **Retry with exponential backoff + full jitter** | `app/ft.py` `call()` | up to 3 attempts on transport errors and 5xx, never on 4xx. Sleep = U(0,1) × 50 ms × 2^(n−1). Each retry goes to the *next* instance in the ring | 285 requests rescued |
-| S2 | **Timeouts** | `app/ft.py`, `app/db.py`, gateway probe | 800 ms per attempt. 1 s to acquire a database connection. 300 ms for the health probe's own database check, inside the 500 ms probe | net-timeout worst case 3021 → 1201 ms |
-| S3 | **Circuit breaker** | `app/ft.py` `CircuitBreaker` | per pool. Opens after 5 consecutive failures, fails fast for 5 s, then lets one trial through (half-open) | 4 openings (db-failure 3, txn-interrupt 1) |
-| S4 | **Health checks** | `app/gateway.py` | `/health` polled every 1 s. Unhealthy instances leave the rotation | node failure: both instances marked down 0.6 s after the kill, back in rotation 1.8 s after the repair. db-failure: 1.1–1.5 s |
-| S5 | **Idempotent processing + duplicate detection** | `app/payment.py`, `sql/10-schema.sql` | `UNIQUE idempotency_key` + `ON CONFLICT DO NOTHING`. A duplicate returns the original result (HTTP 200) and charges nothing. The gateway generates a key if the client sent none, so its own retries are safe | 3 523 duplicates suppressed, **0** duplicate charges |
-| S6 | **Checkpointing + rollback/recovery (payments)** | `app/payment.py` | a `pending` row is written before the charge. A sweep rolls back checkpoints older than 10 s, at boot and periodically | 2 checkpoints rolled back, **0** orphans |
-| S7 | **Graceful degradation** | `app/gateway.py`, `app/transcript.py`, `app/db.py` | reads go to the standby. Stale data under 60 s old is served with HTTP 203 and `degraded: true` | 169 standby reads, 1 422 degraded responses |
-| S8 | **Fail-fast writes** | `app/db.py` | a bounded connection-acquire timeout instead of waiting for a dead primary | db-failure: failed writes answered in 5 ms median, 29 ms p95, instead of hanging |
+| S1 | **Retry with exponential backoff + full jitter** | `app/fault_tolerance/software/retry.py` | up to 3 attempts on transport errors and 5xx, never on 4xx. Sleep = U(0,1) × 50 ms × 2^(n−1). Each retry goes to the *next* instance in the ring | 285 requests rescued |
+| S2 | **Timeouts** | `app/fault_tolerance/software/timeouts.py` | 800 ms per attempt. 1 s to acquire a database connection. 300 ms for the health probe's own database check, inside the 500 ms probe | net-timeout worst case 3021 → 1201 ms |
+| S3 | **Circuit breaker** | `app/fault_tolerance/software/circuit_breaker.py` | per pool. Opens after 5 consecutive failures, fails fast for 5 s, then lets one trial through (half-open) | 4 openings (db-failure 3, txn-interrupt 1) |
+| S4 | **Health checks** | `app/fault_tolerance/software/health_check.py` | `/health` polled every 1 s. Unhealthy instances leave the rotation | node failure: both instances marked down 0.6 s after the kill, back in rotation 1.8 s after the repair. db-failure: 1.1–1.5 s |
+| S5 | **Idempotent processing + duplicate detection** | `app/fault_tolerance/software/idempotency.py`, `config/postgres/init/10-schema.sql` | `UNIQUE idempotency_key` + `ON CONFLICT DO NOTHING`. A duplicate returns the original result (HTTP 200) and charges nothing. The gateway generates a key if the client sent none, so its own retries are safe | 3 523 duplicates suppressed, **0** duplicate charges |
+| S6 | **Checkpointing + rollback/recovery (payments)** | `app/fault_tolerance/software/checkpoint_rollback.py` | a `pending` row is written before the charge. A sweep rolls back checkpoints older than 10 s, at boot and periodically | 2 checkpoints rolled back, **0** orphans |
+| S7 | **Graceful degradation** | `app/fault_tolerance/software/degradation.py`, `app/fault_tolerance/infrastructure/db_failover.py` | reads go to the standby. Stale data under 60 s old is served with HTTP 203 and `degraded: true` | 169 standby reads, 1 422 degraded responses |
+| S8 | **Fail-fast writes** | `app/fault_tolerance/software/timeouts.py` (`DB_ACQUIRE_S`) | a bounded connection-acquire timeout instead of waiting for a dead primary | db-failure: failed writes answered in 5 ms median, 29 ms p95, instead of hanging |
 | S9 | **Service replication** | `docker-compose.yml`, gateway ring | stateless replicas behind the gateway | node failure: 0 failed requests |
-| S10 | **Checkpointing + lease-based job adoption (timetable)** | `app/timetable.py`, `app/schedule.py` | progress is saved every 10 placements, renewing a 3 s lease. A live replica claims an expired lease atomically (`FOR UPDATE SKIP LOCKED`) and resumes from the checkpoint. An owner that has lost its lease is fenced off at its next write | unit tests: resuming at any point gives exactly the uninterrupted timetable. Demo scenario |
+| S10 | **Checkpointing + lease-based job adoption (timetable)** | `app/fault_tolerance/software/job_checkpoint.py`, `app/services/schedule.py` | progress is saved every 10 placements, renewing a 3 s lease. A live replica claims an expired lease atomically (`FOR UPDATE SKIP LOCKED`) and resumes from the checkpoint. An owner that has lost its lease is fenced off at its next write | demo: timetable-1 crashed at 60/120, timetable-2 adopted the job and finished 120/120 about 3 s later |
 
 **The mechanisms depend on each other.** Retrying a `POST` is only safe because
 of S5, so the gateway propagates the idempotency key. A health check is only
-useful if its own deadline is shorter than the prober's (`results/METHODOLOGY.md`
+useful if its own deadline is shorter than the prober's (`reports/METHODOLOGY.md`
 §8 records the defect this caused). And timetable resumption is only correct
 because placement is deterministic: a checkpoint is just a prefix of the
-placements, and `tests/test_schedule.py` checks this property directly.
+placements, so resuming from it gives exactly the uninterrupted timetable.
 
 ## 8. Implementation
 
@@ -424,20 +424,21 @@ that uses it is exactly what the baseline measures.
 
 | Path | Content |
 |---|---|
-| `app/ft.py` | retry, timeout, circuit breaker. Standard library only |
-| `app/db.py` | connection pools, read failover, transactions, health probe |
-| `app/gateway.py` | load balancer, health loop, degradation |
-| `app/student.py`, `app/payment.py`, `app/transcript.py`, `app/timetable.py` | the services |
-| `app/schedule.py` | pure, deterministic timetable placement |
-| `app/eventlog.py` | the JSONL event log and its Prometheus exposition |
-| `app/chaos.py` | fault-injection control plane (`/chaos`, `/chaos/crash`) |
-| `scripts/` | workload, scenarios, metrics, runner, comparison, demo |
-| `tests/` | 10 self-checks (`python -m unittest discover -s tests -t .`) |
-| `monitoring/prometheus.yml` | scrape configuration and useful queries |
+| `app/services/` | the business logic: gateway, student, payment, transcript, timetable (+ `schedule.py`, pure placement) |
+| `app/fault_tolerance/software/` | one file per software mechanism, S1–S10 (§7) |
+| `app/fault_tolerance/infrastructure/` | the code side of H1 (load balancer) and H2 (standby reads) |
+| `app/fault_tolerance/README.md` | every mechanism, its number and its file, on one page |
+| `app/core/` | plumbing: database pools, the event log and `/metrics`, the shared FastAPI factory |
+| `app/fault_injection.py` | fault-injection control plane (`/chaos`, `/chaos/crash`) |
+| `docker-compose.yml` | the deployment and H1–H5: replicas, standby, restart policy, checksums, Prometheus |
+| `config/` | PostgreSQL init SQL and `pg_hba.conf`, Prometheus scrape configuration |
+| `experiments/` | workload, scenarios, metrics, runner, comparison, campaign, demo |
+| `logs/` | raw data: one directory per run, plus the live `events.jsonl` |
+| `reports/` | this report, architecture, methodology, comparison, one report per run |
 
 ## 9. Experimental methodology
 
-The full methodology is in `results/METHODOLOGY.md`. In brief:
+The full methodology is in `reports/METHODOLOGY.md`. In brief:
 
 * 10 concurrent clients, a 50 ms think time, and a mix of 60 % student reads,
   20 % transcript reads and 20 % payments. 20 % of payment intents are re-sent
@@ -453,7 +454,7 @@ The full methodology is in `results/METHODOLOGY.md`. In brief:
   per intent, orphaned checkpoints, and ledger balance.
 
 The timetable scenario is **not** part of the measured campaign. It is verified by
-unit tests and by `scripts/demo.sh timetable` (§14.3).
+`npm run demo -- timetable` (§14.3).
 
 ## 10. Results and comparison
 
@@ -496,7 +497,7 @@ or writes failed.
 | Interrupted transaction | 100.00 % | 99.95 % | 62.57 % | 93.57 % |
 | High load | 99.76 % | 99.83 % | 99.78 % | 99.84 % |
 
-(Request-based, from `results/*/workload.jsonl.gz`. The high-load figures include
+(Request-based, from `logs/*/workload.jsonl.gz`. The high-load figures include
 the window-close cut-off.)
 
 ### 10.3 Campaign totals
@@ -515,7 +516,7 @@ artefact, they fell from 4 157 to 714 (**−82.8 %**). Duplicate charges fell fr
 | REQ-3 no duplicates, no orphans | FT: 0 and 0 in all six runs | **met** (baseline: 3 210 and 2) |
 | REQ-4 detection ≤ 1 s | FT: 6–848 ms in all fault scenarios | **met** |
 | REQ-5 no outage > 5 s | FT: no outage at all | **met** (baseline: 10.0 s) |
-| REQ-6 the timetable job completes after a crash | resumption is unit-tested and shown in the demo. Not measured in the campaign | **met functionally** |
+| REQ-6 the timetable job completes after a crash | shown in the demo. Not measured in the campaign | **met functionally** |
 
 ## 11. Discussion and limitations
 
@@ -555,14 +556,14 @@ guaranteed in that window was integrity: no orphan and no double charge.
 is the gateway and the primary database, and 25 % is the host. None of the six
 scenarios kills the gateway or the host, so the campaign could not show this.
 
-**Two errors in the earlier narrative of `results/COMPARISON.md` were corrected
+**Two errors in the earlier narrative of `reports/COMPARISON.md` were corrected
 during this analysis.** It reported the baseline's p99 in net-timeout (24 ms) as
 "the full injected delay". In fact the 3 s requests are only 0.97 % of the run,
 which is why p99 cannot see them. It also said that in high load "the baseline began
 failing 50 s into the overload" while the FT version "lost none". In fact both
 versions' failures are window-close cut-offs, and neither failed under load. Both
-paragraphs are now generated from the raw logs (`scripts/compare.ts`), along with
-two clarifications to its theoretical-model section.
+paragraphs were rewritten from the raw logs, along with two clarifications to its
+theoretical-model section.
 
 **Limitations.**
 
@@ -639,21 +640,20 @@ order of value.
 ### 14.2 Logs and data
 
 * `logs/events.jsonl`: the live event log. All services append to it.
-* `results/<scenario>__<mode>/`: `workload.jsonl.gz`, `events.jsonl.gz`,
-  `metrics.json` and a self-contained `REPORT.md` for each of the twelve runs.
-* `results/EXPERIMENT-LOG.md`: every run in execution order.
-* `results-before-healthfix/`: the superseded campaign, kept for comparison
-  (`results/METHODOLOGY.md` §8).
+* `logs/<scenario>__<mode>/`: `workload.jsonl.gz` and `events.jsonl.gz`, the raw
+  data of each of the twelve runs.
+* `reports/runs/<scenario>__<mode>/`: `metrics.json` and a self-contained
+  `REPORT.md` for each run.
+* `reports/EXPERIMENT-LOG.md`: every run in execution order.
+* The superseded campaign (`reports/METHODOLOGY.md` §8) remains in the git history.
 
 ### 14.3 Reproduction and demonstration
 
 ```
 docker compose down -v                 # once: the timetable tables and checksums need a fresh volume
-npm test                               # 10 self-checks
 npm run up:ft && npm run campaign      # fault-tolerant campaign
 npm run up:baseline && npm run campaign
-node --experimental-strip-types scripts/compare.ts
 
-bash scripts/demo.sh                   # live demo: app crash, database failure, node failure, timetable
+npm run demo                           # live demo: app crash, database failure, node failure, timetable
 docker compose --profile monitoring up -d   # Prometheus on http://localhost:9090
 ```

@@ -1,29 +1,24 @@
-// Experiment runner: one controlled failure-injection run, end to end.
-//
-//   node --experimental-strip-types scripts/run.ts <scenario>
-//
-// It restores the system to a known-good state, resets the ledger, drives the
-// workload, injects the fault at a fixed offset, repairs at a fixed offset,
-// then writes the raw data AND a self-contained report for that single run to
-// results/<scenario>__<mode>/. The mode (baseline or ft) is read from the
-// running system, never assumed.
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { mkdirSync, writeFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { runWorkload, type Rec } from './workload.ts';
 import { SCENARIOS, dc } from './scenarios.ts';
-import { computeMetrics } from './metrics.ts';
-import { consistencyFrom, rebuildLog, report, writeJsonlGz, ms, pctStr, s1 } from './report.ts';
+import { gzipSync } from 'node:zlib';
+import { computeMetrics, consistencyFrom } from './metrics.ts';
 
 const exec = promisify(execFile);
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+const writeJsonlGz = (path: string, rows: unknown[]): void =>
+  writeFileSync(`${path}.gz`, gzipSync(Buffer.from(rows.map((r) => JSON.stringify(r)).join('\n') + '\n')));
+const ms = (v: number | null | undefined) => (v == null ? 'n/a' : `${v} ms`);
+const pctStr = (v: number | null) => (v == null ? 'n/a' : `${(v * 100).toFixed(2)} %`);
 const GATEWAY = 'http://localhost:8080';
 const INSTANCES = [3011, 3012, 3021, 3022, 3031, 3041, 3042];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Reads a file from a byte offset -- the slice of the shared event log this run produced. */
 function readFrom(path: string, offset: number): string {
   const size = statSync(path).size;
   if (size <= offset) return '';
@@ -43,7 +38,6 @@ const psql = async (sql: string): Promise<string> => {
   return stdout.trim();
 };
 
-/** Bring every container back and wait until the whole platform answers. */
 async function ensureHealthy(): Promise<void> {
   process.stdout.write('  restoring platform ');
   await dc('start');
@@ -71,7 +65,7 @@ async function main(): Promise<void> {
   const name = process.argv[2];
   const scenario = SCENARIOS[name];
   if (!scenario) {
-    console.log(`usage: node scripts/run.ts <${Object.keys(SCENARIOS).join('|')}>`);
+    console.log(`usage: node experiments/run.ts <${Object.keys(SCENARIOS).join('|')}>`);
     process.exit(1);
   }
 
@@ -82,7 +76,6 @@ async function main(): Promise<void> {
   const mode = health.ft ? 'ft' : 'baseline';
   console.log(`  mode: ${mode.toUpperCase()}`);
 
-  // Fresh ledger, so duplicate/orphan counts belong to this run alone.
   await psql("TRUNCATE payments; UPDATE students SET balance = 0;");
 
   const runId = `${name}-${mode}-${Date.now()}`;
@@ -115,14 +108,12 @@ async function main(): Promise<void> {
   });
   const t1 = Date.now();
 
-  // --- collect the service-side event log for this window --------------------
   const events = readFrom(eventsPath, eventsOffset)
     .split('\n')
     .filter(Boolean)
     .map((l) => JSON.parse(l))
     .filter((e) => e.ts >= t0 - 2000 && e.ts <= t1 + 2000);
 
-  // --- data consistency ------------------------------------------------------
   const ledger = await psql(
     `select
        (select count(*) from payments where state='completed'),
@@ -140,20 +131,18 @@ async function main(): Promise<void> {
 
   const metrics = computeMetrics(recs, events, t0, t1, injectTs || t0 + scenario.injectAtMs);
 
-  // --- persist ---------------------------------------------------------------
-  const dir = `${ROOT}results/${name}__${mode}`;
+  const logDir = `${ROOT}logs/${name}__${mode}`;
+  const dir = `${ROOT}reports/runs/${name}__${mode}`;
+  mkdirSync(logDir, { recursive: true });
   mkdirSync(dir, { recursive: true });
-  writeJsonlGz(`${dir}/workload.jsonl`, recs);
-  writeJsonlGz(`${dir}/events.jsonl`, events);
+  writeJsonlGz(`${logDir}/workload.jsonl`, recs);
+  writeJsonlGz(`${logDir}/events.jsonl`, events);
   writeFileSync(`${dir}/metrics.json`, JSON.stringify({ scenario: name, mode, t0, t1, injectTs, repairTs, metrics, consistency }, null, 2));
-  writeFileSync(`${dir}/REPORT.md`, report(scenario, mode, t0, t1, injectTs, repairTs, metrics, consistency, events));
-  rebuildLog();
 
   console.log(`  availability ${pctStr(metrics.availability.requestBased)} req / ${pctStr(metrics.availability.timeBased)} time` +
     ` | failed ${metrics.requests.failed}/${metrics.requests.total}` +
     ` | detect ${ms(metrics.response.detectionMs)} | recover ${ms(metrics.response.recoveryMs)}`);
-  console.log(`  -> ${dir.replace(ROOT, '')}/REPORT.md`);
+  console.log(`  -> ${dir.replace(ROOT, '')}/metrics.json, raw data in ${logDir.replace(ROOT, '')}/`);
 }
 
-// ---------------------------------------------------------------- reporting
 await main();

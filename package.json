@@ -3,19 +3,15 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "pg": "^8.13.1"
+    "node": ">=22.6"
   },
   "scripts": {
-    "test": "LOG_DIR=./logs python3 -m unittest discover -s tests -t . -v",
-    "up:baseline": "printf 'FT_ENABLED=0\\nRESTART_POLICY=no\\n' > .env && docker compose up -d --build",
-    "up:ft": "printf 'FT_ENABLED=1\\nRESTART_POLICY=unless-stopped\\n' > .env && docker compose up -d --build",
-    "exp": "node --experimental-strip-types scripts/run.ts",
-    "campaign": "bash scripts/campaign.sh",
-    "demo": "bash scripts/demo.sh",
-    "monitoring": "docker compose --profile monitoring up -d",
-    "mode": "curl -s localhost:8080/health | head -c 40; echo"
+    "up:ft": "node --experimental-strip-types experiments/up.ts ft",
+    "up:baseline": "node --experimental-strip-types experiments/up.ts baseline",
+    "mode": "node -e \"fetch('http://localhost:8080/health').then(r=>r.json()).then(j=>console.log(j.ft?'fault-tolerant':'baseline')).catch(()=>console.log('not running'))\"",
+    "demo": "node --experimental-strip-types experiments/demo.ts",
+    "exp": "node --experimental-strip-types experiments/run.ts",
+    "campaign": "node --experimental-strip-types experiments/campaign.ts",
+    "monitoring": "docker compose --profile monitoring up -d"
   }
 }

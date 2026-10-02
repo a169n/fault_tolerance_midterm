@@ -5,11 +5,9 @@ CREATE TABLE students (
   balance NUMERIC(10,2) NOT NULL DEFAULT 0
 );
 
--- idempotency_key is UNIQUE: this single constraint is what makes payment
--- processing idempotent and duplicate requests detectable.
 CREATE TABLE payments (
   id              BIGSERIAL PRIMARY KEY,
-  idempotency_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL UNIQUE,  -- S5: no double charge
   student_id      TEXT NOT NULL,
   amount          NUMERIC(10,2) NOT NULL,
   state           TEXT NOT NULL CHECK (state IN ('pending','completed','failed','rolled_back')),
@@ -32,5 +30,4 @@ INSERT INTO grades (student_id, course, grade)
 SELECT 's' || i, 'COURSE-' || c, 2.0 + ((i + c) % 3)
 FROM generate_series(1, 200) AS i, generate_series(1, 5) AS c;
 
--- Replication role used by the hot standby (see docker-compose.yml).
 CREATE ROLE repl WITH REPLICATION LOGIN PASSWORD 'replpass';

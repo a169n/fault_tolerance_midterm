@@ -1,11 +1,3 @@
-// Workload generator. Drives a realistic request mix against the gateway and
-// records the outcome of EVERY request, which is the raw material for the
-// availability / failure-rate / MTTR calculations in scripts/metrics.ts.
-//
-// The client-side timeout matters: without it a worker blocked on a hung baseline
-// dependency would simply stop issuing requests, and the baseline would look
-// better than it is. 10s represents the patience of a real user.
-
 export type Rec = {
   ts: number;        // request start, epoch ms
   op: string;        // students | transcripts | payments
@@ -48,10 +40,6 @@ export async function runWorkload(opts: WorkloadOpts): Promise<Rec[]> {
   const recs: Rec[] = [];
   let intentCounter = 0;
 
-  // Hard stop for the observation window. The baseline has no timeout anywhere,
-  // so a single hung upstream can block a worker far past the client timeout; on
-  // three early runs that stretched a 70 s window to 262 s and invalidated the
-  // metrics. This controller guarantees the window is exactly durationMs.
   const windowOver = new AbortController();
   const stopTimer = setTimeout(() => windowOver.abort(), durationMs);
 
@@ -59,7 +47,6 @@ export async function runWorkload(opts: WorkloadOpts): Promise<Rec[]> {
     const started = Date.now();
     const student = `s${1 + Math.floor(Math.random() * 200)}`;
     let url = `${gateway}/api/students/${student}`;
-    // Whichever comes first: the client's patience, or the end of the window.
     const signal = AbortSignal.any([AbortSignal.timeout(clientTimeoutMs), windowOver.signal]);
     let init: RequestInit = { signal };
 
@@ -76,7 +63,6 @@ export async function runWorkload(opts: WorkloadOpts): Promise<Rec[]> {
 
     try {
       const res = await fetch(url, init);
-      // Drain the body so the connection is reusable and the timing is honest.
       await res.text();
       recs.push({
         ts: started, op, status: res.status, ok: res.status < 400,
@@ -100,8 +86,6 @@ export async function runWorkload(opts: WorkloadOpts): Promise<Rec[]> {
       if (op === 'payments') {
         const intent = `${runId}-${intentCounter++}`;
         await once(op, intent, false);
-        // 20% of clients resend the same intent (the classic "did my payment go
-        // through?" retry). With idempotency this must not produce a second charge.
         if (Math.random() < 0.2) await once(op, intent, true);
       } else {
         await once(op);
@@ -118,8 +102,6 @@ export async function runWorkload(opts: WorkloadOpts): Promise<Rec[]> {
     }, opts.rampAtMs).unref();
   }
 
-  // Wait for the window to close, then give aborted requests a bounded grace
-  // period to settle. The race is the backstop: nothing may extend the window.
   await new Promise((r) => setTimeout(r, durationMs + 500));
   await Promise.race([Promise.allSettled(workers), new Promise((r) => setTimeout(r, 3000))]);
   clearTimeout(stopTimer);

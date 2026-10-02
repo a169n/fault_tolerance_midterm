@@ -1,38 +1,32 @@
-"""Student Service.
-
-Replicated (student-1, student-2) behind the gateway; this is the instance we
-kill for the application-crash experiment.
-"""
 from __future__ import annotations
 
 from fastapi.responses import JSONResponse
 
-from . import chaos
-from .db import db_healthy, read, to_jsonable, write
-from .eventlog import ft_enabled
-from .service import create_app
+from .. import fault_injection
+from ..core.db import db_healthy, read, to_jsonable, write
+from ..core.eventlog import ft_enabled
+from ..core.service import create_app
 
 app = create_app()
-app.include_router(chaos.router)
+app.include_router(fault_injection.router)
 
 
 @app.get("/health")
 async def health():
     ok = await db_healthy()
-    # Reporting unhealthy on a dead database is what lets the gateway stop routing here.
     return JSONResponse(status_code=200 if ok else 503, content={"ok": ok, "ft": ft_enabled()})
 
 
 @app.get("/")
 async def list_students():
-    await chaos.chaos_gate()
+    await fault_injection.chaos_gate()
     rows = await read("SELECT id, name, credits, balance FROM students ORDER BY id LIMIT 100")
     return to_jsonable(rows)
 
 
 @app.post("/")
 async def create_student(body: dict):
-    await chaos.chaos_gate()
+    await fault_injection.chaos_gate()
     if not body.get("id") or not body.get("name"):
         return JSONResponse(status_code=400, content={"error": "id and name are required"})
     rows = await write(
@@ -46,7 +40,7 @@ async def create_student(body: dict):
 
 @app.get("/{student_id}")
 async def get_student(student_id: str):
-    await chaos.chaos_gate()
+    await fault_injection.chaos_gate()
     rows = await read("SELECT id, name, credits, balance FROM students WHERE id = %s", (student_id,))
     if not rows:
         return JSONResponse(status_code=404, content={"error": "student not found"})

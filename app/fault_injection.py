@@ -1,9 +1,3 @@
-"""In-process fault injection.
-
-Exposed as an HTTP control plane so scripts/scenarios.ts can inject latency,
-error rates and hard crashes at a precise moment without rebuilding or
-restarting a container.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +7,7 @@ import threading
 
 from fastapi import APIRouter, HTTPException
 
-from .eventlog import log
+from .core.eventlog import log
 
 config = {
     "latencyMs": int(os.environ.get("CHAOS_LATENCY_MS", 0)),
@@ -25,8 +19,6 @@ router = APIRouter()
 
 
 async def chaos_gate() -> None:
-    """Called at the top of every business handler. Simulates network delay and
-    flaky upstreams."""
     if config["latencyMs"] > 0:
         await asyncio.sleep(config["latencyMs"] / 1000)
     if config["failRate"] > 0 and random.random() < config["failRate"]:
@@ -47,9 +39,6 @@ async def set_chaos(body: dict):
 
 @router.post("/chaos/crash")
 async def crash():
-    """Hard, immediate process death -- used for the application-crash and
-    interrupted-transaction experiments. os._exit skips cleanup on purpose: a real
-    crash does not get to run shutdown handlers."""
     log(kind="chaos", action="crash")
-    threading.Timer(0.05, lambda: os._exit(1)).start()
+    threading.Timer(0.05, lambda: os._exit(1)).start()  # hard crash, no cleanup
     return {"crashing": True}

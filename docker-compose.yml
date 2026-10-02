@@ -1,61 +1,98 @@
-# Baseline:        FT_ENABLED=0 RESTART_POLICY=no            docker compose up -d --build
-# Fault-tolerant:  FT_ENABLED=1 RESTART_POLICY=unless-stopped docker compose up -d --build
-#
-# Hardware / infrastructure fault tolerance demonstrated here:
-#   1. Service replication + load balancing (student, payment and timetable pairs behind the gateway)
-#   2. PostgreSQL streaming replication (primary + hot standby, read failover in app/db.py)
-#   3. Self-healing via container restart policy (the Compose analogue of a k8s ReplicaSet)
-#
-# Monitoring is opt-in, so the measured configuration stays exactly as it was:
-#   docker compose --profile monitoring up -d      Prometheus on http://localhost:9090
 
 x-service: &service
   build: .
-  restart: ${RESTART_POLICY:-no}
+  restart: ${RESTART_POLICY:-no}            # H3 self-healing
   environment: &service-env
-    FT_ENABLED: ${FT_ENABLED:-0}
+    FT_ENABLED: ${FT_ENABLED:-0}            # the one switch: baseline (0) or FT (1)
     LOG_DIR: /logs
     DATABASE_URL: postgresql://postgres:postgres@postgres-primary:5432/university
     DATABASE_REPLICA_URL: postgresql://postgres:postgres@postgres-replica:5432/university
   volumes:
-    - ./logs:/logs
+    - ./logs:/logs                          # every service appends to logs/events.jsonl
   depends_on:
     postgres-primary:
       condition: service_healthy
 
 services:
-  postgres-primary:
+
+  gateway:                                  # single entry point, H1 load balancer
+    <<: *service
+    command: uvicorn app.services.gateway:app --host 0.0.0.0 --port 8080
+    environment:
+      <<: *service-env
+      SERVICE_NAME: gateway
+      PORT: 8080
+      STUDENT_URLS: http://student-1:3000,http://student-2:3000   # H1: replica pools
+      PAYMENT_URLS: http://payment-1:3000,http://payment-2:3000
+      TRANSCRIPT_URLS: http://transcript-1:3000
+      TIMETABLE_URLS: http://timetable-1:3000,http://timetable-2:3000
+    ports: ["8080:8080"]
+
+  student-1:                                # replica 1 · node A
+    <<: *service
+    command: uvicorn app.services.student:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: student-1 }
+    ports: ["3011:3000"]
+
+  student-2:                                # replica 2 · node B
+    <<: *service
+    command: uvicorn app.services.student:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: student-2 }
+    ports: ["3012:3000"]
+
+  payment-1:                                # replica 1 · node A
+    <<: *service
+    command: uvicorn app.services.payment:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: payment-1 }
+    ports: ["3021:3000"]
+
+  payment-2:                                # replica 2 · node B
+    <<: *service
+    command: uvicorn app.services.payment:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: payment-2 }
+    ports: ["3022:3000"]
+
+  timetable-1:                              # replica 1 · node A
+    <<: *service
+    command: uvicorn app.services.timetable:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: timetable-1 }
+    ports: ["3041:3000"]
+
+  timetable-2:                              # replica 2 · node B
+    <<: *service
+    command: uvicorn app.services.timetable:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: timetable-2 }
+    ports: ["3042:3000"]
+
+  transcript-1:                             # 1 instance, covered by S7 cache
+    <<: *service
+    command: uvicorn app.services.transcript:app --host 0.0.0.0 --port 3000
+    environment: { <<: *service-env, SERVICE_NAME: transcript-1 }
+    ports: ["3031:3000"]
+
+  postgres-primary:                         # H2: primary, the only writable copy
     image: postgres:16
-    restart: ${RESTART_POLICY:-no}
+    restart: ${RESTART_POLICY:-no}          # H3
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: university
-      # Assumption: the database is reachable only on the internal Compose network,
-      # so trust auth is acceptable here and keeps pg_hba out of the setup. A real
-      # deployment would use scram-sha-256 plus a replication-only pg_hba entry.
       POSTGRES_HOST_AUTH_METHOD: trust
-      # Storage-level information redundancy: every 8 kB page carries a checksum,
-      # so a page corrupted on disk is reported on read instead of silently
-      # returning wrong data. The standby inherits it through pg_basebackup.
-      # Takes effect on a fresh volume only (docker compose down -v).
-      POSTGRES_INITDB_ARGS: --data-checksums
+      POSTGRES_INITDB_ARGS: --data-checksums   # H4
     command: postgres -c hba_file=/etc/postgresql/pg_hba.conf -c wal_level=replica -c max_wal_senders=10 -c max_replication_slots=10 -c hot_standby=on
     volumes:
-      - ./sql:/docker-entrypoint-initdb.d:ro
-      - ./pg/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./config/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - pgprimary:/var/lib/postgresql/data
-    ports: ["55432:5432"]   # host port shifted: 5432 is often taken by a local Postgres
+    ports: ["55432:5432"]   # 5432 often taken locally
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d university"]
       interval: 2s
       timeout: 3s
       retries: 30
 
-  # Hot standby, cloned with pg_basebackup on first boot. Serves reads when the
-  # primary is down (app/db.py read failover).
-  postgres-replica:
+  postgres-replica:                         # H2: hot standby, serves reads
     image: postgres:16
-    restart: ${RESTART_POLICY:-no}
+    restart: ${RESTART_POLICY:-no}          # H3
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -73,68 +110,11 @@ services:
       exec gosu postgres postgres
       "
 
-  gateway:
-    <<: *service
-    command: uvicorn app.gateway:app --host 0.0.0.0 --port 8080
-    environment:
-      <<: *service-env
-      SERVICE_NAME: gateway
-      PORT: 8080
-      STUDENT_URLS: http://student-1:3000,http://student-2:3000
-      PAYMENT_URLS: http://payment-1:3000,http://payment-2:3000
-      TRANSCRIPT_URLS: http://transcript-1:3000
-      TIMETABLE_URLS: http://timetable-1:3000,http://timetable-2:3000
-    ports: ["8080:8080"]
-
-  student-1:
-    <<: *service
-    command: uvicorn app.student:app --host 0.0.0.0 --port 3000
-    environment: { <<: *service-env, SERVICE_NAME: student-1 }
-    ports: ["3011:3000"]
-
-  student-2:
-    <<: *service
-    command: uvicorn app.student:app --host 0.0.0.0 --port 3000
-    environment: { <<: *service-env, SERVICE_NAME: student-2 }
-    ports: ["3012:3000"]
-
-  payment-1:
-    <<: *service
-    command: uvicorn app.payment:app --host 0.0.0.0 --port 3000
-    environment: { <<: *service-env, SERVICE_NAME: payment-1 }
-    ports: ["3021:3000"]
-
-  payment-2:
-    <<: *service
-    command: uvicorn app.payment:app --host 0.0.0.0 --port 3000
-    environment: { <<: *service-env, SERVICE_NAME: payment-2 }
-    ports: ["3022:3000"]
-
-  transcript-1:
-    <<: *service
-    command: uvicorn app.transcript:app --host 0.0.0.0 --port 3000
-    environment: { <<: *service-env, SERVICE_NAME: transcript-1 }
-    ports: ["3031:3000"]
-
-  # Replicated so that a job survives the loss of the instance running it: the
-  # other one adopts it when the lease expires (app/timetable.py).
-  timetable-1:
-    <<: *service
-    command: uvicorn app.timetable:app --host 0.0.0.0 --port 3000
-    environment: { <<: *service-env, SERVICE_NAME: timetable-1 }
-    ports: ["3041:3000"]
-
-  timetable-2:
-    <<: *service
-    command: uvicorn app.timetable:app --host 0.0.0.0 --port 3000
-    environment: { <<: *service-env, SERVICE_NAME: timetable-2 }
-    ports: ["3042:3000"]
-
-  prometheus:
+  prometheus:                               # H5, opt-in: --profile monitoring
     image: prom/prometheus:v2.53.0
     profiles: ["monitoring"]
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports: ["9090:9090"]
 
 volumes:
