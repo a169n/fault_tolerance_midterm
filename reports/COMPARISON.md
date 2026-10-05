@@ -11,7 +11,7 @@ the same container image; only `FT_ENABLED` and the restart policy differ.
 | Scenario | Failed (baseline) | Failed (FT) | Avail. req (base) | Avail. req (FT) | Detect (base) | Detect (FT) | Dup. charges (base) | Dup. (FT) | Orphans (base) | Orphans (FT) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Application crash | 1200 / 11982 | **1 / 12350** | 89.98 % | **99.99 %** | 57 ms | 103 ms | 445 | **0** | 0 | **0** |
-| Database failure | 35 / 7175 | **532 / 8704** | 99.51 % | **93.89 %** | 284 ms | 367 ms | 258 | **0** | 0 | **0** |
+| Database failure | 35 / 7175 | **348 / 8241** | 99.51 % | **95.78 %** | 284 ms | 190 ms | 258 | **0** | 0 | **0** |
 | Network / service timeout | 0 / 8261 | **0 / 8646** | 100.00 % | **100.00 %** | -- | 848 ms | 334 | **0** | 0 | **0** |
 | Hardware / node failure | 1845 / 12469 | **0 / 12645** | 85.20 % | **100.00 %** | 99 ms | 359 ms | 305 | **0** | 0 | **0** |
 | Corrupted / lost transaction | 1084 / 12531 | **190 / 12567** | 91.35 % | **98.49 %** | 12 ms | 6 ms | 307 | **0** | 2 | **0** |
@@ -22,9 +22,9 @@ the same container image; only `FT_ENABLED` and the restart policy differ.
 | Measure | Baseline | Fault-tolerant | Change |
 |---|---|---|---|
 | Runs | 6 | 6 | |
-| Total requests | 93300 | 94129 | |
-| Failed requests | **4260** | **789** | 81.5 % fewer |
-| Availability (request-based) | 95.43 % | 99.16 % | |
+| Total requests | 93300 | 93666 | |
+| Failed requests | **4260** | **605** | 85.8 % fewer |
+| Availability (request-based) | 95.43 % | 99.35 % | |
 | Availability (time-based) | 99.74 % | 100.00 % | |
 | Observed outages | 1 | 0 | |
 | Total downtime | 10.0 s | 0.0 s | |
@@ -53,15 +53,18 @@ retrying them onto student-2, and lost nothing. Note that time-based availabilit
 half the time -- which is precisely why request-based availability must also be reported.
 
 **Database failure.** This is the one row where the fault-tolerant version looks
-worse, and the explanation matters. It returned 532 errors against the
-baseline's 35, but those errors are payment *writes* failing fast: a hot
+worse, and the explanation matters. It returned 348 errors against the
+baseline's 35, but 346 of those errors are payment *writes* failing fast (the other
+2 are reads cut off at the window close): a hot
 standby is read-only, so with the primary down there is nowhere for a write to go, and
-failing in 5 ms (median) is the correct behaviour. Meanwhile reads stayed up --
-169 served from the standby and
-1422 from the stale cache -- and the client-visible outage was zero.
+failing in 4 ms (median) is the correct behaviour. Meanwhile reads stayed up --
+749 served from the standby, none needing the stale cache -- and the
+client-visible outage was zero. The price is latency: a read first waits out the
+300 ms connection-acquire timeout on the dead primary, so reads during the fault
+took 312 ms (median) and the run's p95 is 312 ms.
 The baseline's low error count is an artefact: with no timeout, 20 requests hung for the
 client's full 10 s patience, and a blocked client issues no further requests. Throughput
-collapsed from 8704 to 7175 requests and the system was genuinely
+collapsed from 8241 to 7175 requests and the system was genuinely
 unavailable for 10.0 s (time-based availability
 97.78 %). Hanging is not better than failing; it only looks
 better in a ratio whose denominator it destroys.
@@ -110,7 +113,7 @@ hundred requests are always in flight, so the cut-off itself produces them. That
 also what the ~50 s "detection time" in the headline table measures: the window
 closing, not a reaction to load. Not one request failed because of the overload in
 either version. Latency rose in both (p95 135 ms baseline, 150 ms fault-tolerant;
-at 10 workers it is 13-20 ms in every other run), so the platform was loaded but not saturated --
+at 10 workers it is 13-20 ms in every other run except db-failure FT, see above), so the platform was loaded but not saturated --
 this run shows headroom, not overload protection. The duplicate charges
 (1561 in the baseline) are the largest of the campaign simply because the most
 payments were sent: in the baseline every client resend becomes a second charge,
@@ -123,16 +126,17 @@ Counts are from the fault-tolerant runs; the baseline has none of these paths.
 | Scenario | Failed calls absorbed | Rescued by retry | Breaker openings | Degraded responses | Replica reads | Duplicates suppressed | Checkpoints rolled back |
 |---|---|---|---|---|---|---|---|
 | Application crash | 18 | 18 | 0 | 0 | 0 | 477 | 0 |
-| Database failure | 236 | 7 | 3 | 1591 | 169 | 230 | 0 |
+| Database failure | 48 | 0 | 1 | 749 | 749 | 257 | 0 |
 | Network / service timeout | 245 | 245 | 0 | 0 | 0 | 321 | 0 |
 | Hardware / node failure | 15 | 15 | 0 | 0 | 0 | 497 | 0 |
 | Corrupted / lost transaction | 6 | 0 | 1 | 0 | 0 | 455 | 2 |
 | High load | 0 | 0 | 0 | 0 | 0 | 1543 | 0 |
 
-Campaign totals: 520 failed upstream calls absorbed internally,
-285 requests rescued by retry, 4 circuit-breaker openings,
-1422 responses served degraded, 169 reads failed over to the
-standby.
+Campaign totals: 332 failed upstream calls absorbed internally,
+278 requests rescued by retry, 2 circuit-breaker openings,
+0 responses served stale (HTTP 203), 749 reads failed over to the
+standby. (The "Degraded responses" column counts degraded-path events, which
+include standby reads.)
 
 ## 5. Theoretical vs measured availability
 
@@ -175,6 +179,15 @@ measured results reproduce that ordering.
   flight as abandoned. Only the repeated runs are reported. The window length of
   every run is published in `EXPERIMENT-LOG.md` so this class of distortion is
   visible rather than hidden.
+* **The db-failure FT run was repeated on 2026-10-05.** In the first pass a
+  service waited 1 s for a connection to the dead primary before reading the
+  standby, longer than the gateway's 800 ms per-attempt timeout. Most standby
+  reads were therefore cut off and answered from the gateway's stale cache instead
+  (169 standby reads, 1422 stale responses, 532 failed). The acquire timeout is
+  now 300 ms, and the stale cache is keyed per service (it was keyed by path
+  only, so `/students/s7` and `/transcripts/s7` shared an entry). Only the
+  repeated run is reported. The other five FT runs predate the change and were
+  not repeated: with the primary reachable the acquire timeout is not reached.
 * **Requests cut off by the window close count as failures.** This is the stated
   definition (METHODOLOGY §2), and it is harmless at 10 workers, where it adds at
   most a handful per run. At 110 workers it produces every failure in the high-load

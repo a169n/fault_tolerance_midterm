@@ -268,16 +268,16 @@ From the twelve-run campaign (`reports/COMPARISON.md` §2): each version ran
 
 | Metric | Baseline | Fault-tolerant |
 |---|---|---|
-| Requests / failed | 93 300 / 4 260 | 94 129 / 789 |
-| Failed, excluding requests cut off at the window close | 4 157 | 714 |
-| Availability, request-based | 95.43 % | 99.16 % |
+| Requests / failed | 93 300 / 4 260 | 93 666 / 605 |
+| Failed, excluding requests cut off at the window close | 4 157 | 529 |
+| Availability, request-based | 95.43 % | 99.35 % |
 | Availability, time-based | 99.74 % | 100.00 % |
 | Observed outages | 1 | 0 |
 | MTTF | 413.1 s | > 423 s (right-censored: no outage) |
 | MTBF | 423.1 s (MTTF + MTTR) | n/a |
 | MTTR | 10.0 s | n/a: nothing to repair |
 | Observed failure rate | 8.5 outages/h | 0 /h |
-| Requests rescued by retry | — | 285 |
+| Requests rescued by retry | — | 278 |
 | Duplicate charges / orphaned payments | 3 210 / 2 | 0 / 0 |
 
 **Theory against measurement.** The analytical model predicts 99.998 % for the
@@ -314,7 +314,7 @@ Prometheus.
 | # | Mechanism | Configuration | Evidence |
 |---|---|---|---|
 | H1 | **Service replication + load balancing** | student, payment and timetable run as pairs. The gateway round-robins over healthy instances | node failure: 1845 failed requests in the baseline, **0** in FT |
-| H2 | **Database replication** | PostgreSQL 16 streaming replication. The standby is cloned with `pg_basebackup` and serves reads as a hot standby | db-failure: 169 reads served by the standby. Zero client-visible outage for reads |
+| H2 | **Database replication** | PostgreSQL 16 streaming replication. The standby is cloned with `pg_basebackup` and serves reads as a hot standby | db-failure: 749 reads served by the standby. Zero client-visible outage for reads |
 | H3 | **Self-healing** | `restart: unless-stopped`, the Compose analogue of a Kubernetes ReplicaSet | app-crash: student-1 answered again about 1 s after the crash, with no operator involved |
 | H4 | **Storage checksums** | `initdb --data-checksums`: every 8 kB page carries a checksum, verified on read. The standby inherits it | configured. No experiment corrupts a page. Verify with `SHOW data_checksums;` |
 | H5 | **Independent monitoring** | Prometheus scrapes `/metrics` on all eight instances every 2 s. Its `up` series detects a silent instance without relying on the gateway | `docker compose --profile monitoring up -d` |
@@ -389,14 +389,14 @@ cannot be shown in containers, so it is documented here instead (FMEA row 11).
 
 | # | Mechanism | Where | How it works | Evidence (FT campaign) |
 |---|---|---|---|---|
-| S1 | **Retry with exponential backoff + full jitter** | `app/fault_tolerance/software/retry.py` | up to 3 attempts on transport errors and 5xx, never on 4xx. Sleep = U(0,1) × 50 ms × 2^(n−1). Each retry goes to the *next* instance in the ring | 285 requests rescued |
-| S2 | **Timeouts** | `app/fault_tolerance/software/timeouts.py` | 800 ms per attempt. 1 s to acquire a database connection. 300 ms for the health probe's own database check, inside the 500 ms probe | net-timeout worst case 3021 → 1201 ms |
+| S1 | **Retry with exponential backoff + full jitter** | `app/fault_tolerance/software/retry.py` | up to 3 attempts on transport errors and 5xx, never on 4xx. Sleep = U(0,1) × 50 ms × 2^(n−1). Each retry goes to the *next* instance in the ring | 278 requests rescued |
+| S2 | **Timeouts** | `app/fault_tolerance/software/timeouts.py` | 800 ms per attempt. 300 ms to acquire a database connection, below the per-attempt timeout so that a standby read fits inside one attempt. 300 ms for the health probe's own database check, inside the 500 ms probe | net-timeout worst case 3021 → 1201 ms |
 | S3 | **Circuit breaker** | `app/fault_tolerance/software/circuit_breaker.py` | per pool. Opens after 5 consecutive failures, fails fast for 5 s, then lets one trial through (half-open) | 4 openings (db-failure 3, txn-interrupt 1) |
 | S4 | **Health checks** | `app/fault_tolerance/software/health_check.py` | `/health` polled every 1 s. Unhealthy instances leave the rotation | node failure: both instances marked down 0.6 s after the kill, back in rotation 1.8 s after the repair. db-failure: 1.1–1.5 s |
 | S5 | **Idempotent processing + duplicate detection** | `app/fault_tolerance/software/idempotency.py`, `config/postgres/init/10-schema.sql` | `UNIQUE idempotency_key` + `ON CONFLICT DO NOTHING`. A duplicate returns the original result (HTTP 200) and charges nothing. The gateway generates a key if the client sent none, so its own retries are safe | 3 523 duplicates suppressed, **0** duplicate charges |
 | S6 | **Checkpointing + rollback/recovery (payments)** | `app/fault_tolerance/software/checkpoint_rollback.py` | a `pending` row is written before the charge. A sweep rolls back checkpoints older than 10 s, at boot and periodically | 2 checkpoints rolled back, **0** orphans |
-| S7 | **Graceful degradation** | `app/fault_tolerance/software/degradation.py`, `app/fault_tolerance/infrastructure/db_failover.py` | reads go to the standby. Stale data under 60 s old is served with HTTP 203 and `degraded: true` | 169 standby reads, 1 422 degraded responses |
-| S8 | **Fail-fast writes** | `app/fault_tolerance/software/timeouts.py` (`DB_ACQUIRE_S`) | a bounded connection-acquire timeout instead of waiting for a dead primary | db-failure: failed writes answered in 5 ms median, 29 ms p95, instead of hanging |
+| S7 | **Graceful degradation** | `app/fault_tolerance/software/degradation.py`, `app/fault_tolerance/infrastructure/db_failover.py` | reads go to the standby. Stale data under 60 s old is served with HTTP 203 and `degraded: true` | db-failure: 749 standby reads, and no stale response was needed. The stale cache answers only when a whole pool is unreachable (FMEA row 4), which no campaign scenario causes |
+| S8 | **Fail-fast writes** | `app/fault_tolerance/software/timeouts.py` (`DB_ACQUIRE_S`) | a bounded connection-acquire timeout instead of waiting for a dead primary | db-failure: failed writes answered in 4 ms median, 14 ms p95, instead of hanging |
 | S9 | **Service replication** | `docker-compose.yml`, gateway ring | stateless replicas behind the gateway | node failure: 0 failed requests |
 | S10 | **Checkpointing + lease-based job adoption (timetable)** | `app/fault_tolerance/software/job_checkpoint.py`, `app/services/schedule.py` | progress is saved every 10 placements, renewing a 3 s lease. A live replica claims an expired lease atomically (`FOR UPDATE SKIP LOCKED`) and resumes from the checkpoint. An owner that has lost its lease is fenced off at its next write | demo: timetable-1 crashed at 60/120, timetable-2 adopted the job and finished 120/120 about 3 s later |
 
@@ -465,7 +465,7 @@ The timetable scenario is **not** part of the measured campaign. It is verified 
 | Scenario | Failed, baseline | Failed, FT | Detection, FT | Duplicate charges (B → FT) | Orphans (B → FT) |
 |---|---|---|---|---|---|
 | Application crash | 1200 / 11982 | 1 / 12350 ¹ | 103 ms | 445 → 0 | 0 → 0 |
-| Database failure | 35 / 7175 ² | 532 / 8704 ³ | 367 ms | 258 → 0 | 0 → 0 |
+| Database failure | 35 / 7175 ² | 348 / 8241 ³ | 190 ms | 258 → 0 | 0 → 0 |
 | Network / service timeout | 0 / 8261 ⁴ | 0 / 8646 | 848 ms | 334 → 0 | 0 → 0 |
 | Hardware / node failure | 1845 / 12469 | 0 / 12645 | 359 ms | 305 → 0 | 0 → 0 |
 | Interrupted transaction | 1084 / 12531 | 190 / 12567 ⁵ | 6 ms | 307 → 0 | 2 → 0 |
@@ -478,8 +478,8 @@ closing.
 ² A small number only because 20 requests hung for the client's full 10 s, and
 a blocked client stops sending. Throughput fell to 7175 requests and the service
 was down for 10.0 s.
-³ Payment writes that failed fast because no writable database existed. Reads:
-99.99 %.
+³ 346 payment writes that failed fast because no writable database existed, plus
+2 reads cut off at the window close. Reads: 99.97 %.
 ⁴ No failures, but 80 requests took about 3 s, and throughput during the fault fell
 from 178 to 11 requests/s.
 ⁵ 183 payment `503`s in the ~5 s while both payment replicas were dead and
@@ -493,7 +493,7 @@ or writes failed.
 | Scenario | Reads, baseline | Reads, FT | Payments, baseline | Payments, FT |
 |---|---|---|---|---|
 | Application crash | 87.11 % | 99.99 % | 99.93 % | 100.00 % |
-| Database failure | 99.52 % | 99.99 % | 99.49 % | 73.05 % |
+| Database failure | 99.52 % | 99.97 % | 99.49 % | 81.30 % |
 | Network / service timeout | 100.00 % | 100.00 % | 100.00 % | 100.00 % |
 | Hardware / node failure | 86.36 % | 100.00 % | 81.35 % | 100.00 % |
 | Interrupted transaction | 100.00 % | 99.95 % | 62.57 % | 93.57 % |
@@ -504,8 +504,8 @@ the window-close cut-off.)
 
 ### 10.3 Campaign totals
 
-Failed requests fell from 4 260 to 789 (**−81.5 %**). Excluding the window-close
-artefact, they fell from 4 157 to 714 (**−82.8 %**). Duplicate charges fell from
+Failed requests fell from 4 260 to 605 (**−85.8 %**). Excluding the window-close
+artefact, they fell from 4 157 to 529 (**−87.3 %**). Duplicate charges fell from
 3 210 to **0**, orphaned payments from 2 to **0**, and client-visible downtime from
 10.0 s to **0 s**.
 
@@ -523,11 +523,11 @@ artefact, they fell from 4 157 to 714 (**−82.8 %**). Duplicate charges fell fr
 ## 11. Discussion and limitations
 
 **Failing fast looks worse than hanging and is better.** In db-failure the FT
-version shows 532 errors against the baseline's 35. Those errors are writes
-failing in a few milliseconds (median 5 ms). The baseline's requests hung instead, and a hung client
+version shows 348 errors against the baseline's 35. Those errors are writes
+failing in a few milliseconds (median 4 ms). The baseline's requests hung instead, and a hung client
 sends no further requests, so its error ratio shrinks while the service is
 unusable. Time-based availability (97.78 % against 100 %) and throughput (7175
-against 8704) show what actually happened.
+against 8241) show what actually happened.
 
 **Retries detect faster than health checks.** In app-crash the gateway's health
 check never saw student-1 down: the restart policy brought it back in about 1 s,

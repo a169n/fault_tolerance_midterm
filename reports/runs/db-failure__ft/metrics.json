@@ -1,25 +1,25 @@
 {
   "scenario": "db-failure",
   "mode": "ft",
-  "t0": 1790083558518,
-  "t1": 1790083629027,
-  "injectTs": 1790083578518,
-  "repairTs": 1790083603518,
+  "t0": 1791208515999,
+  "t1": 1791208586507,
+  "injectTs": 1791208536001,
+  "repairTs": 1791208561001,
   "metrics": {
-    "observationMs": 70509,
+    "observationMs": 70508,
     "requests": {
-      "total": 8704,
-      "successful": 8172,
-      "failed": 532,
-      "degraded": 1422,
+      "total": 8241,
+      "successful": 7893,
+      "failed": 348,
+      "degraded": 0,
       "clientTimeouts": 0
     },
     "availability": {
       "timeBased": 1,
-      "requestBased": 0.9388786764705882,
-      "upBins": 60,
+      "requestBased": 0.9577721150345831,
+      "upBins": 70,
       "downBins": 0,
-      "idleBins": 11
+      "idleBins": 1
     },
     "reliability": {
       "observedFailures": 0,
@@ -32,81 +32,101 @@
       "outages": []
     },
     "response": {
-      "detectionMs": 367,
+      "detectionMs": 190,
       "recoveryMs": null,
-      "absorptionMs": 33922,
+      "absorptionMs": 32750,
       "faultMasked": false,
       "detectionSource": "client-visible failure",
       "p50Ms": 7,
-      "p95Ms": 20,
-      "p99Ms": 63,
-      "maxMs": 2566
+      "p95Ms": 312,
+      "p99Ms": 318,
+      "maxMs": 340
     },
     "mechanisms": {
-      "failedCallAttempts": 236,
-      "retriesThatSucceeded": 7,
-      "breakerOpened": 3,
-      "degradedResponses": 1591,
-      "replicaReads": 169,
-      "duplicatesSuppressed": 230,
+      "failedCallAttempts": 48,
+      "retriesThatSucceeded": 0,
+      "breakerOpened": 1,
+      "degradedResponses": 749,
+      "replicaReads": 749,
+      "duplicatesSuppressed": 257,
       "checkpointsRolledBack": 0,
       "healthTransitions": [
         {
-          "ts": 1790083579668,
-          "target": "http://payment-1:3000",
+          "ts": 1791208537064,
+          "target": "http://timetable-2:3000",
           "ok": false
         },
         {
-          "ts": 1790083579970,
-          "target": "http://payment-2:3000",
+          "ts": 1791208537091,
+          "target": "http://timetable-1:3000",
           "ok": false
         },
         {
-          "ts": 1790083579972,
-          "target": "http://student-1:3000",
-          "ok": false
-        },
-        {
-          "ts": 1790083579973,
+          "ts": 1791208537350,
           "target": "http://student-2:3000",
           "ok": false
         },
         {
-          "ts": 1790083607338,
+          "ts": 1791208537350,
+          "target": "http://student-1:3000",
+          "ok": false
+        },
+        {
+          "ts": 1791208537351,
+          "target": "http://payment-2:3000",
+          "ok": false
+        },
+        {
+          "ts": 1791208537353,
+          "target": "http://payment-1:3000",
+          "ok": false
+        },
+        {
+          "ts": 1791208564657,
+          "target": "http://payment-1:3000",
+          "ok": true
+        },
+        {
+          "ts": 1791208564658,
           "target": "http://student-2:3000",
           "ok": true
         },
         {
-          "ts": 1790083607338,
+          "ts": 1791208567278,
           "target": "http://student-1:3000",
           "ok": true
         },
         {
-          "ts": 1790083608648,
+          "ts": 1791208567279,
+          "target": "http://timetable-1:3000",
+          "ok": true
+        },
+        {
+          "ts": 1791208567469,
           "target": "http://payment-2:3000",
           "ok": true
         },
         {
-          "ts": 1790083611260,
-          "target": "http://payment-1:3000",
+          "ts": 1791208568591,
+          "target": "http://timetable-2:3000",
           "ok": true
         }
       ]
     }
   },
   "consistency": {
-    "paymentRequestsSent": 1970,
-    "paymentRequestsAccepted": 1439,
-    "distinctPaymentIntents": 1646,
-    "deduplicatedResponses": 230,
+    "paymentRequestsSent": 1850,
+    "paymentRequestsAccepted": 1504,
+    "distinctPaymentIntents": 1534,
+    "deduplicatedResponses": 257,
     "duplicateCharges": 0,
-    "unacknowledgedIntents": 437,
-    "completedInDb": 1209,
-    "dbVsIntents": -437,
+    "unacknowledgedIntents": 287,
+    "completedInDb": 1247,
+    "dbVsIntents": -287,
     "orphanedPending": 0,
     "rolledBack": 0,
     "failedPay": 0,
-    "totalCharged": 120900,
+    "totalCharged": 124700,
     "ledgerBalanced": true
   }
 }

@@ -98,8 +98,9 @@ After pulling schema changes, recreate the database once: `docker compose down -
 ## Breaking it by hand
 
     curl -X POST localhost:3011/chaos/crash                              # application crash
-    curl -X POST localhost:3011/chaos -d '{"latencyMs":3000}'            # slow service
-    curl -X POST localhost:3021/chaos -d '{"crashAfterCheckpoint":true}' # interrupted payment
+    J='content-type: application/json'                                   # /chaos needs a JSON body
+    curl -X POST localhost:3011/chaos -H "$J" -d '{"latencyMs":3000}'            # slow service
+    curl -X POST localhost:3021/chaos -H "$J" -d '{"crashAfterCheckpoint":true}' # interrupted payment
     docker compose stop postgres-primary                                 # database failure
     docker compose kill student-1 payment-1                              # node failure
 

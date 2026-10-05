@@ -92,8 +92,9 @@ async def proxy(pool: str, request: Request, path: str):
     body = await request.body()
     target_path = f"/{path}" if path else "/"
     query = request.url.query
+    cache_key = f"{pool}{target_path}?{query}"  # per pool: /students/s7 is not /transcripts/s7
 
-    ring = load_balancer.ring(pool, POOLS[pool], health_check.is_up)   # H1 + S4
+    ring =load_balancer.ring(pool, POOLS[pool], health_check.is_up)   # H1 + S4
     idem = idempotency.forward_key(request.headers)                    # S5
     chosen = {"instance": ring[0], "i": 0}
 
@@ -123,11 +124,11 @@ async def proxy(pool: str, request: Request, path: str):
         if attempts > 1:
             log(kind="recovery", target=pool, action="retry_succeeded", attempts=attempts)
         if method == "GET":
-            _last_good.remember(target_path, payload)
+            _last_good.remember(cache_key, payload)
         return JSONResponse(status_code=status, content=payload)
     except Exception as exc:
-        stale = _last_good.fallback(target_path, pool) if method == "GET" else None   # S7
+        stale = _last_good.fallback(cache_key, pool) if method == "GET" else None   # S7
         if stale is not None:
             return stale
         status = exc.status if isinstance(exc, UpstreamError) and exc.status >= 400 else 503
-        return JSONResponse(status_code=status, content={"error": str(exc)})
+        return JSONResponse(status_code=status, content={"error": str(exc) or type(exc).__name__})
