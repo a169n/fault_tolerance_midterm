@@ -1,15 +1,15 @@
 {
   "scenario": "net-timeout",
   "mode": "baseline",
-  "t0": 1790084107174,
-  "t1": 1790084177680,
-  "injectTs": 1790084127174,
-  "repairTs": 1790084152174,
+  "t0": 1791209522094,
+  "t1": 1791209592598,
+  "injectTs": 1791209542095,
+  "repairTs": 1791209567095,
   "metrics": {
-    "observationMs": 70506,
+    "observationMs": 70504,
     "requests": {
-      "total": 8261,
-      "successful": 8261,
+      "total": 8279,
+      "successful": 8279,
       "failed": 0,
       "degraded": 0,
       "clientTimeouts": 0
@@ -17,9 +17,9 @@
     "availability": {
       "timeBased": 1,
       "requestBased": 1,
-      "upBins": 61,
+      "upBins": 60,
       "downBins": 0,
-      "idleBins": 10
+      "idleBins": 11
     },
     "reliability": {
       "observedFailures": 0,
@@ -37,10 +37,10 @@
       "absorptionMs": null,
       "faultMasked": false,
       "detectionSource": "none",
-      "p50Ms": 7,
+      "p50Ms": 6,
       "p95Ms": 14,
-      "p99Ms": 24,
-      "maxMs": 3021
+      "p99Ms": 122,
+      "maxMs": 3019
     },
     "mechanisms": {
       "failedCallAttempts": 0,
@@ -54,18 +54,18 @@
     }
   },
   "consistency": {
-    "paymentRequestsSent": 1941,
-    "paymentRequestsAccepted": 1941,
-    "distinctPaymentIntents": 1607,
+    "paymentRequestsSent": 1899,
+    "paymentRequestsAccepted": 1899,
+    "distinctPaymentIntents": 1573,
     "deduplicatedResponses": 0,
-    "duplicateCharges": 334,
+    "duplicateCharges": 326,
     "unacknowledgedIntents": 0,
-    "completedInDb": 1941,
-    "dbVsIntents": 334,
+    "completedInDb": 1899,
+    "dbVsIntents": 326,
     "orphanedPending": 0,
     "rolledBack": 0,
     "failedPay": 0,
-    "totalCharged": 194100,
+    "totalCharged": 189900,
     "ledgerBalanced": true
   }
 }

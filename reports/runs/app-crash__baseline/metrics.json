@@ -1,22 +1,22 @@
 {
   "scenario": "app-crash",
   "mode": "baseline",
-  "t0": 1790083958245,
-  "t1": 1790084028754,
-  "injectTs": 1790083978245,
-  "repairTs": 1790084003244,
+  "t0": 1791209371957,
+  "t1": 1791209442465,
+  "injectTs": 1791209391959,
+  "repairTs": 1791209416958,
   "metrics": {
-    "observationMs": 70509,
+    "observationMs": 70508,
     "requests": {
-      "total": 11982,
-      "successful": 10782,
-      "failed": 1200,
+      "total": 12498,
+      "successful": 11223,
+      "failed": 1275,
       "degraded": 0,
-      "clientTimeouts": 3
+      "clientTimeouts": 2
     },
     "availability": {
       "timeBased": 1,
-      "requestBased": 0.899849774661993,
+      "requestBased": 0.8979836773883821,
       "upBins": 70,
       "downBins": 0,
       "idleBins": 1
@@ -32,15 +32,15 @@
       "outages": []
     },
     "response": {
-      "detectionMs": 57,
+      "detectionMs": 103,
       "recoveryMs": null,
       "absorptionMs": null,
       "faultMasked": false,
       "detectionSource": "client-visible failure",
-      "p50Ms": 6,
-      "p95Ms": 14,
-      "p99Ms": 21,
-      "maxMs": 89
+      "p50Ms": 5,
+      "p95Ms": 11,
+      "p99Ms": 18,
+      "maxMs": 50
     },
     "mechanisms": {
       "failedCallAttempts": 0,
@@ -54,18 +54,18 @@
     }
   },
   "consistency": {
-    "paymentRequestsSent": 2690,
-    "paymentRequestsAccepted": 2688,
-    "distinctPaymentIntents": 2245,
+    "paymentRequestsSent": 2923,
+    "paymentRequestsAccepted": 2923,
+    "distinctPaymentIntents": 2412,
     "deduplicatedResponses": 0,
-    "duplicateCharges": 445,
-    "unacknowledgedIntents": 2,
-    "completedInDb": 2690,
-    "dbVsIntents": 445,
+    "duplicateCharges": 511,
+    "unacknowledgedIntents": 0,
+    "completedInDb": 2923,
+    "dbVsIntents": 511,
     "orphanedPending": 0,
     "rolledBack": 0,
     "failedPay": 0,
-    "totalCharged": 269000,
+    "totalCharged": 292300,
     "ledgerBalanced": true
   }
 }

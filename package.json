@@ -12,6 +12,7 @@
     "demo": "node --experimental-strip-types experiments/demo.ts",
     "exp": "node --experimental-strip-types experiments/run.ts",
     "campaign": "node --experimental-strip-types experiments/campaign.ts",
+    "metrics": "node --experimental-strip-types experiments/show.ts",
     "monitoring": "docker compose --profile monitoring up -d"
   }
 }

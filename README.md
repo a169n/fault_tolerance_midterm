@@ -50,6 +50,7 @@ experiments/              HOW the experiments are run
 ├── run.ts                  one experiment end to end
 ├── campaign.ts             all 6 scenarios in a row
 ├── metrics.ts              MTTF, MTBF, MTTR, availability, data consistency
+├── show.ts                 prints the saved metrics as a table (npm run metrics)
 ├── demo.ts                 live demonstration of 4 failure-and-recovery scenarios
 └── up.ts                   deploy baseline or FT (npm run up:ft | up:baseline)
 
@@ -77,6 +78,8 @@ Same commands on Windows, macOS and Linux. Needs Docker and Node.js 22.6 or newe
     npm run demo -- db-failure   # just one scenario
     npm run exp app-crash   # one controlled experiment
     npm run campaign        # all six against the deployed version
+    npm run metrics         # results of every saved run, as a table
+    npm run metrics -- db-failure   # one scenario: baseline vs FT + mechanisms that fired
 
     npm run monitoring      # Prometheus on http://localhost:9090
     # Swagger UI:           http://localhost:8080/docs  (every service: :30xx/docs)
