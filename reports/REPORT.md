@@ -2,6 +2,8 @@
 
 Course: Fault Tolerance and Dependable Computing — Midterm project
 
+Team: Aibyn Talgatov, CSE-2505M (`a169n`) and Gani Uapov, CSE-2502M (`9an1`). Who did what is in §14.4.
+
 Every number in this report comes from the raw logs in `logs/` or from a
 calculation shown next to it. The per-run reports, the comparison and
 the methodology are in `reports/`; this document ties them to the dependability
@@ -657,3 +659,25 @@ npm run up:baseline && npm run campaign
 npm run demo                           # live demo: app crash, database failure, node failure, timetable
 docker compose --profile monitoring up -d   # Prometheus on http://localhost:9090
 ```
+
+### 14.4 Team contributions
+
+The project was done by a team of two. The split below is taken from the git
+history (`git log --stat`); the commit hashes are given so it can be checked.
+Aibyn Talgatov committed under two identities (`Aibyn` and `a169n`), which are the same
+person.
+
+| Area | Aibyn Talgatov, CSE-2505M (`a169n`) | Gani Uapov, CSE-2502M (`9an1`) |
+|---|---|---|
+| Baseline and fault-tolerant platform | gateway, student, payment and transcript services, database layer, `FT_ENABLED` switch, Docker Compose deployment with the PostgreSQL primary and standby (`ab343b5`) | timetable service as a fourth replicated service (`3e9f5c5`, `6d27f49`) |
+| Software fault tolerance | S1–S9: retry with backoff, timeouts, circuit breaker, health checks, idempotency, payment checkpoint and rollback, graceful degradation, fail-fast writes (`ab343b5`) | S10: checkpointed timetable generation with lease-based job adoption (`3e9f5c5`) |
+| Hardware / infrastructure fault tolerance | H1–H3: service replication and load balancing, streaming replication, restart policy (`ab343b5`) | H4–H5: storage page checksums, Prometheus `/metrics` and the monitoring profile (`1e26073`, `6d27f49`) |
+| Fault injection and experiments | fault-injection control plane, workload generator, six scenarios, runner and metrics; the twelve-run campaign and its raw logs; the earlier campaign that exposed the health-check defect (`ab343b5`) | Windows portability of the harness (`5ba7c95`); re-analysis of the net-timeout and high-load results from the raw logs (`9f70481`) |
+| Demonstration | port of the demo to the TypeScript harness, `npm run demo`, `up` and `campaign` commands (`5433530`) | first live failure-and-recovery demo script (`6eecb4c`) |
+| Report and documentation | `METHODOLOGY.md`, `COMPARISON.md`, per-run reports (`ab343b5`); README rewrite and report updates after the restructuring (`5433530`) | this technical report (§1–§14: dependability model, reliability calculations, fault tree, FMEA, hardware design) and `ARCHITECTURE.md` (`b8957f0`) |
+| Code structure | restructuring into `app/core`, `app/services`, `app/fault_tolerance` with one file per mechanism, and `experiments/`, `logs/`, `reports/` (`4750050`, `5433530`) | — |
+
+Commits: Aibyn Talgatov 3 (`ab343b5`, `4750050`, `5433530`), Gani Uapov 7 (`3e9f5c5`,
+`1e26073`, `6d27f49`, `5ba7c95`, `9f70481`, `6eecb4c`, `b8957f0`). The commit
+count does not reflect the amount of work: the first commit contains the whole
+measured system and campaign.
